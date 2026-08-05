@@ -1,98 +1,103 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
-
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import { router, useFocusEffect } from "expo-router";
+import { useState } from "react";
+import { Pressable, ScrollView, Text, View } from "react-native";
+import { getTrip } from "../../lib/storage";
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const [trip, setTrip] = useState<any>(null);
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+  async function loadTrip() {
+    const data = await getTrip();
+    setTrip(data);
+  }
+
+  useFocusEffect(() => {
+    loadTrip();
+  });
+
+  return (
+    <ScrollView
+      style={{
+        flex: 1,
+        backgroundColor: "#F5F7FB",
+      }}
+    >
+      <View
+        style={{
+          paddingTop: 70,
+          paddingHorizontal: 20,
+          paddingBottom: 30,
+        }}
+      >
+        <Text
+          style={{
+            fontSize: 34,
+            fontWeight: "bold",
+          }}
+        >
+          🗼 TravelAI
+        </Text>
+
+        <Text
+          style={{
+            marginTop: 8,
+            fontSize: 18,
+            color: "#666",
+          }}
+        >
+          나만의 스마트 여행 플래너
+        </Text>
+
+        {!trip && (
+          <Pressable
+            onPress={() => router.push("/trip/create")}
+            style={{
+              marginTop: 25,
+              backgroundColor: "#3B82F6",
+              borderRadius: 14,
+              paddingVertical: 15,
+              alignItems: "center",
+            }}
+          >
+            <Text
+              style={{
+                color: "white",
+                fontSize: 18,
+                fontWeight: "bold",
+              }}
+            >
+              + 새로운 여행 만들기
+            </Text>
+          </Pressable>
+        )}
+
+        {trip && (
+          <View
+            style={{
+              marginTop: 25,
+              backgroundColor: "white",
+              borderRadius: 16,
+              padding: 20,
+            }}
+          >
+            <Text style={{ fontSize: 24, fontWeight: "bold" }}>
+              ✈️ {trip.tripName}
+            </Text>
+
+            <Text style={{ marginTop: 8 }}>
+              📍 {trip.country} · {trip.city}
+            </Text>
+
+            <Text style={{ marginTop: 8 }}>
+              📅 {trip.startDate} ~ {trip.endDate}
+            </Text>
+
+            <Text style={{ marginTop: 8 }}>
+              👥 {trip.people}명
+            </Text>
+          </View>
+        )}
+      </View>
+    </ScrollView>
   );
 }
-
-const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-  },
-});
