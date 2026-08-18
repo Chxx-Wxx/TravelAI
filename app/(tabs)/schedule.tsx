@@ -1,5 +1,5 @@
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Alert,
   Pressable,
@@ -12,16 +12,38 @@ import AppButton from "../../components/AppButton";
 import {
   deleteSchedule,
   getSchedules,
+  getTrip,
 } from "../../lib/storage";
-import { Schedule } from "../../types";
+import { Schedule, Trip } from "../../types";
+
+function parseDate(dateString: string) {
+  const [year, month, day] = dateString.split("-").map(Number);
+
+  return new Date(year, month - 1, day);
+}
+
+function calculateDayNumber(
+  tripStartDate: string,
+  scheduleDate: string
+) {
+  const start = parseDate(tripStartDate);
+  const target = parseDate(scheduleDate);
+
+  const difference =
+    target.getTime() - start.getTime();
+
+  return Math.floor(difference / (1000 * 60 * 60 * 24)) + 1;
+}
 
 export default function ScheduleScreen() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [trip, setTrip] = useState<Trip | null>(null);
 
-  const loadSchedules = useCallback(async () => {
-    const data = await getSchedules();
+  const loadData = useCallback(async () => {
+    const scheduleData = await getSchedules();
+    const tripData = await getTrip();
 
-    const sorted = [...data].sort((a, b) => {
+    const sorted = [...scheduleData].sort((a, b) => {
       const first = `${a.date} ${a.time}`;
       const second = `${b.date} ${b.time}`;
 
@@ -29,34 +51,47 @@ export default function ScheduleScreen() {
     });
 
     setSchedules(sorted);
+    setTrip(tripData);
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      loadSchedules();
-    }, [loadSchedules])
+      loadData();
+    }, [loadData])
   );
 
   function handleDelete(id: string, title: string) {
-    Alert.alert(
-      "일정 삭제",
-      `"${title}" 일정을 삭제할까요?`,
-      [
-        {
-          text: "취소",
-          style: "cancel",
+    Alert.alert("일정 삭제", `"${title}" 일정을 삭제할까요?`, [
+      {
+        text: "취소",
+        style: "cancel",
+      },
+      {
+        text: "삭제",
+        style: "destructive",
+        onPress: async () => {
+          await deleteSchedule(id);
+          await loadData();
         },
-        {
-          text: "삭제",
-          style: "destructive",
-          onPress: async () => {
-            await deleteSchedule(id);
-            await loadSchedules();
-          },
-        },
-      ]
-    );
+      },
+    ]);
   }
+
+  const groupedSchedules = useMemo(() => {
+    const grouped: Record<string, Schedule[]> = {};
+
+    schedules.forEach((schedule) => {
+      if (!grouped[schedule.date]) {
+        grouped[schedule.date] = [];
+      }
+
+      grouped[schedule.date].push(schedule);
+    });
+
+    return Object.entries(grouped).sort(([dateA], [dateB]) =>
+      dateA.localeCompare(dateB)
+    );
+  }, [schedules]);
 
   return (
     <ScrollView
@@ -78,6 +113,18 @@ export default function ScheduleScreen() {
       >
         일정
       </Text>
+
+      {trip && (
+        <Text
+          style={{
+            marginTop: 8,
+            fontSize: 15,
+            color: "#6B7280",
+          }}
+        >
+          {trip.tripName} · {trip.startDate} ~ {trip.endDate}
+        </Text>
+      )}
 
       <View
         style={{
@@ -118,108 +165,182 @@ export default function ScheduleScreen() {
           </Text>
         </View>
       ) : (
-        schedules.map((schedule) => (
-          <View
-            key={schedule.id}
-            style={{
-              marginTop: 15,
-              backgroundColor: "white",
-              borderRadius: 16,
-              padding: 18,
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 20,
-                fontWeight: "bold",
-              }}
-            >
-              {schedule.title}
-            </Text>
+        groupedSchedules.map(([date, daySchedules]) => {
+          const dayNumber = trip
+            ? calculateDayNumber(trip.startDate, date)
+            : null;
 
-            <Text
-              style={{
-                marginTop: 10,
-                fontSize: 15,
-                color: "#555",
-              }}
-            >
-              📍 {schedule.location}
-            </Text>
-
-            <Text
-              style={{
-                marginTop: 7,
-                fontSize: 15,
-                color: "#555",
-              }}
-            >
-              📅 {schedule.date}
-            </Text>
-
-            <Text
-              style={{
-                marginTop: 7,
-                fontSize: 15,
-                color: "#555",
-              }}
-            >
-              🕐 {schedule.time}
-            </Text>
-
+          return (
             <View
+              key={date}
               style={{
-                flexDirection: "row",
-                gap: 10,
-                marginTop: 18,
+                marginTop: 30,
               }}
             >
-              <Pressable
-                onPress={() =>
-                  router.push(`/schedule/${schedule.id}` as any)
-                }
+              <View
                 style={{
-                  flex: 1,
-                  backgroundColor: "#E8F1FF",
-                  paddingVertical: 12,
-                  borderRadius: 10,
-                  alignItems: "center",
+                  marginBottom: 12,
                 }}
               >
                 <Text
                   style={{
+                    fontSize: 22,
                     fontWeight: "bold",
-                    color: "#2563EB",
+                    color: "#111827",
                   }}
                 >
-                  수정
+                  {dayNumber && dayNumber > 0
+                    ? `${dayNumber}일차`
+                    : "여행 일정"}
                 </Text>
-              </Pressable>
 
-              <Pressable
-                onPress={() =>
-                  handleDelete(schedule.id, schedule.title)
-                }
-                style={{
-                  flex: 1,
-                  backgroundColor: "#FEECEC",
-                  paddingVertical: 12,
-                  borderRadius: 10,
-                  alignItems: "center",
-                }}
-              >
                 <Text
                   style={{
-                    fontWeight: "bold",
-                    color: "#DC2626",
+                    marginTop: 4,
+                    fontSize: 15,
+                    color: "#6B7280",
                   }}
                 >
-                  삭제
+                  {date}
                 </Text>
-              </Pressable>
+              </View>
+
+              {daySchedules.map((schedule) => (
+                <View
+                  key={schedule.id}
+                  style={{
+                    flexDirection: "row",
+                    marginBottom: 14,
+                  }}
+                >
+                  <View
+                    style={{
+                      width: 65,
+                      paddingTop: 4,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 16,
+                        fontWeight: "bold",
+                        color: "#2563EB",
+                      }}
+                    >
+                      {schedule.time}
+                    </Text>
+                  </View>
+
+                  <View
+                    style={{
+                      width: 2,
+                      backgroundColor: "#D1D5DB",
+                      marginRight: 14,
+                      position: "relative",
+                    }}
+                  >
+                    <View
+                      style={{
+                        position: "absolute",
+                        top: 6,
+                        left: -5,
+                        width: 12,
+                        height: 12,
+                        borderRadius: 6,
+                        backgroundColor: "#3B82F6",
+                      }}
+                    />
+                  </View>
+
+                  <View
+                    style={{
+                      flex: 1,
+                      backgroundColor: "white",
+                      borderRadius: 16,
+                      padding: 16,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 19,
+                        fontWeight: "bold",
+                        color: "#111827",
+                      }}
+                    >
+                      {schedule.title}
+                    </Text>
+
+                    <Text
+                      style={{
+                        marginTop: 8,
+                        fontSize: 15,
+                        color: "#6B7280",
+                      }}
+                    >
+                      📍 {schedule.location}
+                    </Text>
+
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        gap: 10,
+                        marginTop: 16,
+                      }}
+                    >
+                      <Pressable
+                        onPress={() =>
+                          router.push(
+                            `/schedule/${schedule.id}` as any
+                          )
+                        }
+                        style={{
+                          flex: 1,
+                          backgroundColor: "#E8F1FF",
+                          paddingVertical: 11,
+                          borderRadius: 10,
+                          alignItems: "center",
+                        }}
+                      >
+                        <Text
+                          style={{
+                            fontWeight: "bold",
+                            color: "#2563EB",
+                          }}
+                        >
+                          수정
+                        </Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() =>
+                          handleDelete(
+                            schedule.id,
+                            schedule.title
+                          )
+                        }
+                        style={{
+                          flex: 1,
+                          backgroundColor: "#FEECEC",
+                          paddingVertical: 11,
+                          borderRadius: 10,
+                          alignItems: "center",
+                        }}
+                      >
+                        <Text
+                          style={{
+                            fontWeight: "bold",
+                            color: "#DC2626",
+                          }}
+                        >
+                          삭제
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              ))}
             </View>
-          </View>
-        ))
+          );
+        })
       )}
     </ScrollView>
   );
