@@ -8,7 +8,8 @@ import {
 } from "react-native";
 import MapView, { Marker } from "react-native-maps";
 
-import { getSchedules, getTrip } from "../../lib/storage";
+import { getTrip } from "../../lib/storage";
+import { fetchSchedules } from "../../services/schedule";
 import { Schedule, Trip } from "../../types";
 
 export default function MapScreen() {
@@ -23,7 +24,7 @@ export default function MapScreen() {
   // 저장된 여행 / 일정 불러오기
   const loadData = useCallback(async () => {
     const tripData = await getTrip();
-    const scheduleData = await getSchedules();
+    const scheduleData = await fetchSchedules();
 
     const sorted = [...scheduleData].sort((a, b) =>
       `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
