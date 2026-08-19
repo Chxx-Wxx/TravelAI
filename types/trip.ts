@@ -1,3 +1,8 @@
+export interface TripMember {
+  id: string;
+  name: string;
+}
+
 export interface Trip {
   tripName: string;
   country: string;
@@ -5,6 +10,8 @@ export interface Trip {
   startDate: string;
   endDate: string;
   people: string;
+
+  members?: TripMember[];
 }
 
 export type ScheduleCategory =
@@ -23,12 +30,67 @@ export interface Schedule {
   date: string;
   time: string;
 
-  // 기존에 만든 일정 데이터와도 호환되도록 optional
   category?: ScheduleCategory;
   durationMinutes?: number;
   memo?: string;
-  // 지도 연동용
+
   latitude?: number;
-  Longitude?: number;
+  longitude?: number;
   placeId?: string;
+}
+
+export type ExpenseCategory =
+  | "식비"
+  | "교통"
+  | "쇼핑"
+  | "관광"
+  | "숙소"
+  | "기타";
+
+export type CurrencyCode =
+  | "KRW"
+  | "JPY"
+  | "USD"
+  | "EUR";
+
+export type ExpenseType =
+  | "personal"
+  | "shared"
+  | "loan";
+
+export interface Expense {
+  id: string;
+
+  localAmount: number;
+  currency: CurrencyCode;
+
+  exchangeRate: number;
+  krwAmount: number;
+
+  category: ExpenseCategory;
+  date: string;
+  memo?: string;
+
+  expenseType?: ExpenseType;
+
+  // 공동 지출
+  payer?: string;
+  participants?: string[];
+
+  // 돈 빌려주기
+  lender?: string;
+  borrower?: string;
+}
+
+export interface ExpenseSettings {
+  budgetKrw: number;
+
+  defaultCurrency: CurrencyCode;
+
+  exchangeRates: {
+    KRW: number;
+    JPY: number;
+    USD: number;
+    EUR: number;
+  };
 }

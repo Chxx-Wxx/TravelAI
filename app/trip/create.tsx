@@ -1,12 +1,12 @@
 import { router } from "expo-router";
 import { useState } from "react";
 import {
-    Alert,
-    Pressable,
-    ScrollView,
-    Text,
-    TextInput,
-    View,
+  Alert,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { saveTrip } from "../../lib/storage";
 
@@ -68,6 +68,7 @@ export default function CreateTripScreen() {
           value={tripName}
           onChangeText={setTripName}
           style={input}
+          placeholderTextColor="#9CA3AF"
         />
 
         <TextInput
@@ -75,6 +76,7 @@ export default function CreateTripScreen() {
           value={country}
           onChangeText={setCountry}
           style={input}
+          placeholderTextColor="#9CA3AF"
         />
 
         <TextInput
@@ -82,6 +84,7 @@ export default function CreateTripScreen() {
           value={city}
           onChangeText={setCity}
           style={input}
+          placeholderTextColor="#9CA3AF"
         />
 
         <TextInput
@@ -89,6 +92,7 @@ export default function CreateTripScreen() {
           value={startDate}
           onChangeText={setStartDate}
           style={input}
+          placeholderTextColor="#9CA3AF"
         />
 
         <TextInput
@@ -96,6 +100,7 @@ export default function CreateTripScreen() {
           value={endDate}
           onChangeText={setEndDate}
           style={input}
+          placeholderTextColor="#9CA3AF"
         />
 
         <TextInput
@@ -104,6 +109,7 @@ export default function CreateTripScreen() {
           onChangeText={setPeople}
           keyboardType="numeric"
           style={input}
+          placeholderTextColor="#9CA3AF"
         />
 
         <Pressable
@@ -133,6 +139,7 @@ export default function CreateTripScreen() {
 
 const input = {
   backgroundColor: "white",
+  color: "#111827",
   padding: 15,
   borderRadius: 12,
   marginBottom: 15,

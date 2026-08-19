@@ -1,5 +1,5 @@
 import { useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -8,38 +8,41 @@ import {
 } from "react-native";
 import MapView, { Marker } from "react-native-maps";
 
-import {
-  getSchedules,
-  getTrip,
-} from "../../lib/storage";
-
-import {
-  Schedule,
-  Trip,
-} from "../../types";
+import { getSchedules, getTrip } from "../../lib/storage";
+import { Schedule, Trip } from "../../types";
 
 export default function MapScreen() {
+  const mapRef = useRef<MapView | null>(null);
+
   const [trip, setTrip] = useState<Trip | null>(null);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | null>(
     null
   );
 
+  // 저장된 여행 / 일정 불러오기
   const loadData = useCallback(async () => {
     const tripData = await getTrip();
     const scheduleData = await getSchedules();
 
     const sorted = [...scheduleData].sort((a, b) =>
-      `${a.date} ${a.time}`.localeCompare(
-        `${b.date} ${b.time}`
-      )
+      `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
     );
 
     setTrip(tripData);
     setSchedules(sorted);
 
     if (sorted.length > 0) {
-      setSelectedDate((current) => current ?? sorted[0].date);
+      setSelectedDate((current) => {
+        if (
+          current &&
+          sorted.some((schedule) => schedule.date === current)
+        ) {
+          return current;
+        }
+
+        return sorted[0].date;
+      });
     }
   }, []);
 
@@ -49,10 +52,12 @@ export default function MapScreen() {
     }, [loadData])
   );
 
+  // 일정이 존재하는 날짜 목록
   const dates = useMemo(() => {
     return [...new Set(schedules.map((schedule) => schedule.date))];
   }, [schedules]);
 
+  // 현재 선택된 날짜의 일정
   const selectedSchedules = useMemo(() => {
     if (!selectedDate) {
       return [];
@@ -63,22 +68,26 @@ export default function MapScreen() {
     );
   }, [schedules, selectedDate]);
 
+  // 좌표가 실제로 저장되어 있는 일정만 지도에 표시
   const schedulesWithCoordinates = useMemo(() => {
     return selectedSchedules.filter(
       (schedule) =>
         typeof schedule.latitude === "number" &&
-        typeof schedule.Longitude === "number"
+        typeof schedule.longitude === "number"
     );
   }, [selectedSchedules]);
 
+  // 여행 시작일 기준 몇 일차인지 계산
   function calculateDayNumber(date: string) {
-    if (!trip) return null;
+    if (!trip) {
+      return null;
+    }
 
-    const [startYear, startMonth, startDay] =
-      trip.startDate.split("-").map(Number);
+    const [startYear, startMonth, startDay] = trip.startDate
+      .split("-")
+      .map(Number);
 
-    const [year, month, day] =
-      date.split("-").map(Number);
+    const [year, month, day] = date.split("-").map(Number);
 
     const start = new Date(
       startYear,
@@ -100,6 +109,62 @@ export default function MapScreen() {
         difference / (1000 * 60 * 60 * 24)
       ) + 1
     );
+  }
+
+  // 일정 좌표들에 맞춰 지도 확대/축소
+  function focusSchedules(schedulesToFocus: Schedule[]) {
+    const coordinates = schedulesToFocus
+      .filter(
+        (schedule) =>
+          typeof schedule.latitude === "number" &&
+          typeof schedule.longitude === "number"
+      )
+      .map((schedule) => ({
+        latitude: schedule.latitude as number,
+        longitude: schedule.longitude as number,
+      }));
+
+    if (coordinates.length === 0) {
+      return;
+    }
+
+    // 장소가 하나뿐이면 그 장소 중심으로 이동
+    if (coordinates.length === 1) {
+      mapRef.current?.animateToRegion(
+        {
+          latitude: coordinates[0].latitude,
+          longitude: coordinates[0].longitude,
+          latitudeDelta: 0.03,
+          longitudeDelta: 0.03,
+        },
+        500
+      );
+
+      return;
+    }
+
+    // 여러 장소면 모든 마커가 화면 안에 들어오도록 자동 조정
+    mapRef.current?.fitToCoordinates(coordinates, {
+      edgePadding: {
+        top: 70,
+        right: 50,
+        bottom: 70,
+        left: 50,
+      },
+      animated: true,
+    });
+  }
+
+  function handleSelectDate(date: string) {
+    setSelectedDate(date);
+
+    const daySchedules = schedules.filter(
+      (schedule) => schedule.date === date
+    );
+
+    setTimeout(() => {
+      focusSchedules(daySchedules);
+    }, 100);
   }
 
   return (
@@ -134,10 +199,11 @@ export default function MapScreen() {
               fontSize: 15,
             }}
           >
-            📍 {trip.city}
+            여행 지도
           </Text>
         )}
 
+        {/* 날짜 선택 */}
         {dates.length > 0 && (
           <ScrollView
             horizontal
@@ -158,7 +224,7 @@ export default function MapScreen() {
               return (
                 <Pressable
                   key={date}
-                  onPress={() => setSelectedDate(date)}
+                  onPress={() => handleSelectDate(date)}
                   style={{
                     backgroundColor: selected
                       ? "#3B82F6"
@@ -198,9 +264,10 @@ export default function MapScreen() {
           </ScrollView>
         )}
 
+        {/* 지도 */}
         <View
           style={{
-            height: 330,
+            height: 350,
             marginTop: 20,
             borderRadius: 20,
             overflow: "hidden",
@@ -208,6 +275,7 @@ export default function MapScreen() {
           }}
         >
           <MapView
+            ref={mapRef}
             style={{
               width: "100%",
               height: "100%",
@@ -218,21 +286,50 @@ export default function MapScreen() {
               latitudeDelta: 0.15,
               longitudeDelta: 0.15,
             }}
+            onMapReady={() => {
+              focusSchedules(schedulesWithCoordinates);
+            }}
           >
-            {schedulesWithCoordinates.map((schedule, index) => (
-              <Marker
-                key={schedule.id}
-                coordinate={{
-                  latitude: schedule.latitude!,
-                  longitude: schedule.Longitude!,
-                }}
-                title={`${index + 1}. ${schedule.title}`}
-                description={schedule.location}
-              />
-            ))}
+            {schedulesWithCoordinates.map(
+              (schedule, index) => (
+                <Marker
+                  key={schedule.id}
+                  coordinate={{
+                    latitude: schedule.latitude as number,
+                    longitude: schedule.longitude as number,
+                  }}
+                  title={`${index + 1}. ${schedule.title}`}
+                  description={schedule.location}
+                >
+                  <View
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 18,
+                      backgroundColor: "#3B82F6",
+                      borderWidth: 3,
+                      borderColor: "white",
+                      justifyContent: "center",
+                      alignItems: "center",
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: "white",
+                        fontWeight: "bold",
+                        fontSize: 15,
+                      }}
+                    >
+                      {index + 1}
+                    </Text>
+                  </View>
+                </Marker>
+              )
+            )}
           </MapView>
         </View>
 
+        {/* 아직 좌표가 없는 경우 */}
         {schedulesWithCoordinates.length === 0 && (
           <View
             style={{
@@ -249,8 +346,8 @@ export default function MapScreen() {
                 lineHeight: 19,
               }}
             >
-              아직 일정에 장소 좌표가 없습니다. 다음 단계에서 장소
-              검색을 연결하면 지도에 번호 마커가 자동으로 표시됩니다.
+              이 날짜의 일정에는 아직 지도 위치가
+              연결되지 않았습니다.
             </Text>
           </View>
         )}
@@ -284,78 +381,122 @@ export default function MapScreen() {
             </Text>
           </View>
         ) : (
-          selectedSchedules.map((schedule, index) => (
-            <View
-              key={schedule.id}
-              style={{
-                flexDirection: "row",
-                marginTop: 14,
-                alignItems: "center",
-              }}
-            >
-              <View
+          selectedSchedules.map((schedule, index) => {
+            const hasCoordinates =
+              typeof schedule.latitude === "number" &&
+              typeof schedule.longitude === "number";
+
+            return (
+              <Pressable
+                key={schedule.id}
+                onPress={() => {
+                  if (!hasCoordinates) {
+                    return;
+                  }
+
+                  mapRef.current?.animateToRegion(
+                    {
+                      latitude: schedule.latitude as number,
+                      longitude: schedule.longitude as number,
+                      latitudeDelta: 0.02,
+                      longitudeDelta: 0.02,
+                    },
+                    400
+                  );
+                }}
                 style={{
-                  width: 34,
-                  height: 34,
-                  borderRadius: 17,
-                  backgroundColor: "#3B82F6",
-                  justifyContent: "center",
+                  flexDirection: "row",
+                  marginTop: 14,
                   alignItems: "center",
                 }}
               >
-                <Text
+                <View
                   style={{
-                    color: "white",
-                    fontWeight: "bold",
+                    width: 34,
+                    height: 34,
+                    borderRadius: 17,
+                    backgroundColor: "#3B82F6",
+                    justifyContent: "center",
+                    alignItems: "center",
                   }}
                 >
-                  {index + 1}
-                </Text>
-              </View>
-
-              <View
-                style={{
-                  flex: 1,
-                  marginLeft: 12,
-                  backgroundColor: "white",
-                  borderRadius: 14,
-                  padding: 15,
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 17,
-                    fontWeight: "bold",
-                    color: "#111827",
-                  }}
-                >
-                  {schedule.title}
-                </Text>
-
-                <Text
-                  style={{
-                    marginTop: 5,
-                    color: "#6B7280",
-                  }}
-                >
-                  {schedule.time} · 📍 {schedule.location}
-                </Text>
-
-                {schedule.category && (
                   <Text
                     style={{
-                      marginTop: 5,
-                      color: "#2563EB",
-                      fontSize: 13,
+                      color: "white",
                       fontWeight: "bold",
                     }}
                   >
-                    {schedule.category}
+                    {index + 1}
                   </Text>
-                )}
-              </View>
-            </View>
-          ))
+                </View>
+
+                <View
+                  style={{
+                    flex: 1,
+                    marginLeft: 12,
+                    backgroundColor: "white",
+                    borderRadius: 14,
+                    padding: 15,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 17,
+                      fontWeight: "bold",
+                      color: "#111827",
+                    }}
+                  >
+                    {schedule.title}
+                  </Text>
+
+                  <Text
+                    style={{
+                      marginTop: 5,
+                      color: "#6B7280",
+                    }}
+                  >
+                    {schedule.time} · 📍 {schedule.location}
+                  </Text>
+
+                  {schedule.category && (
+                    <Text
+                      style={{
+                        marginTop: 5,
+                        color: "#2563EB",
+                        fontSize: 13,
+                        fontWeight: "bold",
+                      }}
+                    >
+                      {schedule.category}
+                    </Text>
+                  )}
+
+                  {hasCoordinates ? (
+                    <Text
+                      style={{
+                        marginTop: 6,
+                        fontSize: 12,
+                        color: "#059669",
+                        fontWeight: "bold",
+                      }}
+                    >
+                      지도 위치 연결됨
+                    </Text>
+                  ) : (
+                    <Text
+                      style={{
+                        marginTop: 6,
+                        fontSize: 12,
+                        color: "#9CA3AF",
+                      }}
+                    >
+                      지도 위치 미등록
+                    </Text>
+                  )}
+                </View>
+              </Pressable>
+            );
+          })
         )}
       </ScrollView>
     </View>
