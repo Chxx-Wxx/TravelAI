@@ -515,21 +515,30 @@ export default function EditScheduleScreen() {
     }
 
     const trip =
-      await getTrip();
+  await getTrip();
 
-    if (!trip) {
-      Alert.alert(
-        "여행 정보 없음",
-        "먼저 여행을 생성해주세요."
-      );
+if (!trip) {
+  Alert.alert(
+    "여행 정보 없음",
+    "먼저 여행을 생성해주세요."
+  );
 
-      return;
-    }
+  return;
+}
 
-    const tripStart =
-      parseDate(
-        trip.startDate
-      );
+if (!trip.id) {
+  Alert.alert(
+    "여행 정보 오류",
+    "여행 ID가 없습니다."
+  );
+
+  return;
+}
+
+const tripStart =
+  parseDate(
+    trip.startDate
+  );
 
     const tripEnd =
       parseDate(
@@ -599,15 +608,7 @@ export default function EditScheduleScreen() {
             memo.trim(),
         }
       );
-      if (!trip.id) {
-  Alert.alert(
-    "여행 정보 오류",
-    "여행 ID가 없습니다."
-  );
-
-  return;
-}
-
+    
       Alert.alert(
         "완료",
         "일정이 수정되었습니다.",
