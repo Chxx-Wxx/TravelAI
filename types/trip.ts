@@ -27,4 +27,8 @@ export interface Schedule {
   category?: ScheduleCategory;
   durationMinutes?: number;
   memo?: string;
+  // 지도 연동용
+  latitude?: number;
+  Longitude?: number;
+  placeId?: string;
 }
