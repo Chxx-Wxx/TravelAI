@@ -1,14 +1,21 @@
 import DateTimePicker, {
   DateTimePickerEvent,
 } from "@react-native-community/datetimepicker";
+
 import { router } from "expo-router";
-import { useState } from "react";
+
 import {
+  useState,
+} from "react";
+
+import {
+  ActivityIndicator,
   Alert,
   Platform,
   Pressable,
   ScrollView,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -16,15 +23,22 @@ import AppButton from "../../components/AppButton";
 import AppInput from "../../components/AppInput";
 
 import {
-  getSchedules,
-  getTrip,
-  saveSchedules,
+  getTrip
 } from "../../lib/storage";
 
 import {
   Schedule,
   ScheduleCategory,
 } from "../../types";
+
+import {
+  PlaceResult,
+  searchPlaces,
+} from "../../services/place";
+
+import {
+  createSchedule,
+} from "../../services/schedule";
 
 const categories: ScheduleCategory[] = [
   "관광",
@@ -45,88 +59,300 @@ const durations = [
 ];
 
 export default function CreateScheduleScreen() {
-  const [title, setTitle] = useState("");
-  const [location, setLocation] = useState("");
+  const [title, setTitle] =
+    useState("");
+
+  const [location, setLocation] =
+    useState("");
+
+  const [address, setAddress] =
+    useState("");
+
+  const [latitude, setLatitude] =
+    useState<number | undefined>(
+      undefined
+    );
+
+  const [longitude, setLongitude] =
+    useState<number | undefined>(
+      undefined
+    );
+
+  const [placeId, setPlaceId] =
+    useState<string | undefined>(
+      undefined
+    );
+
+  const [
+    placeResults,
+    setPlaceResults,
+  ] =
+    useState<PlaceResult[]>([]);
+
+  const [
+    searchingPlace,
+    setSearchingPlace,
+  ] =
+    useState(false);
+
+  const [
+    selectedPlace,
+    setSelectedPlace,
+  ] =
+    useState(false);
 
   const [category, setCategory] =
-    useState<ScheduleCategory>("관광");
+    useState<ScheduleCategory>(
+      "관광"
+    );
 
-  const [durationMinutes, setDurationMinutes] =
+  const [
+    durationMinutes,
+    setDurationMinutes,
+  ] =
     useState(60);
 
-  const [memo, setMemo] = useState("");
+  const [memo, setMemo] =
+    useState("");
 
-  const [date, setDate] = useState(new Date());
-  const [time, setTime] = useState(new Date());
+  const [date, setDate] =
+    useState(new Date());
 
-  const [showDatePicker, setShowDatePicker] =
+  const [time, setTime] =
+    useState(new Date());
+
+  const [
+    showDatePicker,
+    setShowDatePicker,
+  ] =
     useState(false);
 
-  const [showTimePicker, setShowTimePicker] =
+  const [
+    showTimePicker,
+    setShowTimePicker,
+  ] =
     useState(false);
 
-  function formatDate(value: Date) {
-    const year = value.getFullYear();
+  function formatDate(
+    value: Date
+  ) {
+    const year =
+      value.getFullYear();
 
-    const month = String(
-      value.getMonth() + 1
-    ).padStart(2, "0");
+    const month =
+      String(
+        value.getMonth() + 1
+      ).padStart(2, "0");
 
-    const day = String(
-      value.getDate()
-    ).padStart(2, "0");
+    const day =
+      String(
+        value.getDate()
+      ).padStart(2, "0");
 
     return `${year}-${month}-${day}`;
   }
 
-  function formatTime(value: Date) {
-    const hour = String(
-      value.getHours()
-    ).padStart(2, "0");
+  function formatTime(
+    value: Date
+  ) {
+    const hour =
+      String(
+        value.getHours()
+      ).padStart(2, "0");
 
-    const minute = String(
-      value.getMinutes()
-    ).padStart(2, "0");
+    const minute =
+      String(
+        value.getMinutes()
+      ).padStart(2, "0");
 
     return `${hour}:${minute}`;
   }
 
-  function parseDateString(value: string) {
-    const trimmed = value.trim();
+  function parseDateString(
+    value: string
+  ) {
+    const trimmed =
+      value.trim();
 
-    const [year, month, day] = trimmed
-      .split("-")
-      .map(Number);
+    const [
+      year,
+      month,
+      day,
+    ] =
+      trimmed
+        .split("-")
+        .map(Number);
 
-    if (!year || !month || !day) {
+    if (
+      !year ||
+      !month ||
+      !day
+    ) {
       return null;
     }
 
-    const parsed = new Date(
-      year,
-      month - 1,
-      day
+    const parsed =
+      new Date(
+        year,
+        month - 1,
+        day
+      );
+
+    parsed.setHours(
+      0,
+      0,
+      0,
+      0
     );
 
-    parsed.setHours(0, 0, 0, 0);
-
     return parsed;
+  }
+
+  async function handlePlaceSearch() {
+    const query =
+      location.trim();
+
+    if (!query) {
+      Alert.alert(
+        "장소 검색",
+        "검색할 장소를 입력해주세요."
+      );
+
+      return;
+    }
+
+    try {
+      setSearchingPlace(
+        true
+      );
+
+      setSelectedPlace(
+        false
+      );
+
+      setPlaceResults([]);
+
+      const trip =
+        await getTrip();
+
+      const fullQuery =
+        trip?.city
+          ? `${query} ${trip.city}`
+          : query;
+
+      const results =
+        await searchPlaces(
+          fullQuery
+        );
+
+      if (
+        results.length === 0
+      ) {
+        Alert.alert(
+          "검색 결과 없음",
+          "검색된 장소가 없습니다."
+        );
+
+        return;
+      }
+
+      setPlaceResults(
+        results
+      );
+    } catch (error) {
+      console.error(
+        error
+      );
+
+      Alert.alert(
+        "장소 검색 실패",
+        "장소 검색 중 문제가 발생했습니다. 백엔드와 ngrok 연결을 확인해주세요."
+      );
+    } finally {
+      setSearchingPlace(
+        false
+      );
+    }
+  }
+
+  function handleSelectPlace(
+    place: PlaceResult
+  ) {
+    setLocation(
+      place.name
+    );
+
+    setAddress(
+      place.address
+    );
+
+    setLatitude(
+      place.latitude
+    );
+
+    setLongitude(
+      place.longitude
+    );
+
+    setPlaceId(
+      place.id
+    );
+
+    setSelectedPlace(
+      true
+    );
+
+    setPlaceResults([]);
+  }
+
+  function handleLocationChange(
+    text: string
+  ) {
+    setLocation(text);
+
+    setSelectedPlace(
+      false
+    );
+
+    setAddress("");
+
+    setLatitude(
+      undefined
+    );
+
+    setLongitude(
+      undefined
+    );
+
+    setPlaceId(
+      undefined
+    );
   }
 
   function handleDateChange(
     event: DateTimePickerEvent,
     selectedDate?: Date
   ) {
-    if (Platform.OS === "android") {
-      setShowDatePicker(false);
+    if (
+      Platform.OS ===
+      "android"
+    ) {
+      setShowDatePicker(
+        false
+      );
     }
 
-    if (event.type === "dismissed") {
+    if (
+      event.type ===
+      "dismissed"
+    ) {
       return;
     }
 
     if (selectedDate) {
-      setDate(selectedDate);
+      setDate(
+        selectedDate
+      );
     }
   }
 
@@ -134,21 +360,35 @@ export default function CreateScheduleScreen() {
     event: DateTimePickerEvent,
     selectedTime?: Date
   ) {
-    if (Platform.OS === "android") {
-      setShowTimePicker(false);
+    if (
+      Platform.OS ===
+      "android"
+    ) {
+      setShowTimePicker(
+        false
+      );
     }
 
-    if (event.type === "dismissed") {
+    if (
+      event.type ===
+      "dismissed"
+    ) {
       return;
     }
 
     if (selectedTime) {
-      setTime(selectedTime);
+      setTime(
+        selectedTime
+      );
     }
   }
 
   async function handleSave() {
-    if (!title.trim() || !location.trim()) {
+    
+    if (
+      !title.trim() ||
+      !location.trim()
+    ) {
       Alert.alert(
         "알림",
         "일정 이름과 장소를 입력해주세요."
@@ -157,7 +397,8 @@ export default function CreateScheduleScreen() {
       return;
     }
 
-    const trip = await getTrip();
+    const trip =
+      await getTrip();
 
     if (!trip) {
       Alert.alert(
@@ -168,15 +409,20 @@ export default function CreateScheduleScreen() {
       return;
     }
 
-    const tripStart = parseDateString(
-      trip.startDate
-    );
+    const tripStart =
+      parseDateString(
+        trip.startDate
+      );
 
-    const tripEnd = parseDateString(
-      trip.endDate
-    );
+    const tripEnd =
+      parseDateString(
+        trip.endDate
+      );
 
-    if (!tripStart || !tripEnd) {
+    if (
+      !tripStart ||
+      !tripEnd
+    ) {
       Alert.alert(
         "여행 날짜 오류",
         "여행 시작일 또는 종료일을 확인해주세요."
@@ -196,8 +442,10 @@ export default function CreateScheduleScreen() {
     );
 
     if (
-      selectedDateObject < tripStart ||
-      selectedDateObject > tripEnd
+      selectedDateObject <
+        tripStart ||
+      selectedDateObject >
+        tripEnd
     ) {
       Alert.alert(
         "여행 기간 확인",
@@ -207,41 +455,88 @@ export default function CreateScheduleScreen() {
       return;
     }
 
-    const newSchedule: Schedule = {
-      id: Date.now().toString(),
+    const newSchedule: Schedule =
+      {
+        id:
+          Date.now().toString(),
 
-      title: title.trim(),
+        title:
+          title.trim(),
 
-      location: location.trim(),
+        location:
+          location.trim(),
 
-      date: formatDate(date),
+        address:
+          address ||
+          undefined,
 
-      time: formatTime(time),
+        latitude,
 
-      category,
+        longitude,
 
-      durationMinutes,
+        placeId,
 
-      memo: memo.trim(),
-    };
+        date:
+          formatDate(date),
 
-    const schedules =
-      await getSchedules();
+        time:
+          formatTime(time),
 
-    await saveSchedules([
-      ...schedules,
-      newSchedule,
-    ]);
+        category,
+
+        durationMinutes,
+
+        memo:
+          memo.trim(),
+      };
+
+    await createSchedule({
+  title:
+    newSchedule.title,
+
+  location:
+    newSchedule.location,
+
+  address:
+    newSchedule.address,
+
+  latitude:
+    newSchedule.latitude,
+
+  longitude:
+    newSchedule.longitude,
+
+  placeId:
+    newSchedule.placeId,
+
+  category:
+    newSchedule.category,
+
+  durationMinutes:
+    newSchedule.durationMinutes,
+
+  date:
+    newSchedule.date,
+
+  time:
+    newSchedule.time,
+
+  memo:
+    newSchedule.memo,
+});
 
     Alert.alert(
       "완료",
-      "일정이 저장되었습니다.",
+      selectedPlace
+        ? "장소 위치와 함께 일정이 저장되었습니다."
+        : "일정이 저장되었습니다. 장소는 직접 입력된 값으로 저장되었습니다.",
       [
         {
           text: "확인",
-
           onPress: () =>
-            router.replace("/schedule"),
+            router.replace(
+              "/schedule"
+            ),
         },
       ]
     );
@@ -251,22 +546,25 @@ export default function CreateScheduleScreen() {
     <ScrollView
       style={{
         flex: 1,
-        backgroundColor: "#F5F7FB",
+        backgroundColor:
+          "#F5F7FB",
       }}
       contentContainerStyle={{
         paddingHorizontal: 20,
         paddingTop: 70,
         paddingBottom: 70,
       }}
+      keyboardShouldPersistTaps="handled"
     >
       <Text
         style={{
           fontSize: 32,
           fontWeight: "bold",
           marginBottom: 30,
+          color: "#111827",
         }}
       >
-        일정 추가
+        일정 추가 TEST123
       </Text>
 
       <AppInput
@@ -275,17 +573,189 @@ export default function CreateScheduleScreen() {
         onChangeText={setTitle}
       />
 
-      <AppInput
-        placeholder="장소 (예: 아사쿠사 센소지)"
-        value={location}
-        onChangeText={setLocation}
-      />
+      <Text
+        style={{
+          fontSize: 16,
+          fontWeight: "bold",
+          marginBottom: 8,
+          color: "#374151",
+        }}
+      >
+        장소 검색
+      </Text>
+
+      <View
+        style={{
+          flexDirection: "row",
+          gap: 8,
+        }}
+      >
+        <TextInput
+          value={location}
+          onChangeText={
+            handleLocationChange
+          }
+          placeholder="예: 센소지"
+          placeholderTextColor="#9CA3AF"
+          returnKeyType="search"
+          onSubmitEditing={
+            handlePlaceSearch
+          }
+          style={{
+            flex: 1,
+            backgroundColor:
+              "white",
+            color: "#111827",
+            borderRadius: 12,
+            paddingHorizontal: 14,
+            paddingVertical: 13,
+            fontSize: 16,
+          }}
+        />
+
+        <Pressable
+          onPress={
+            handlePlaceSearch
+          }
+          disabled={
+            searchingPlace
+          }
+          style={{
+            paddingHorizontal: 18,
+            borderRadius: 12,
+            justifyContent:
+              "center",
+
+            backgroundColor:
+              searchingPlace
+                ? "#CBD5E1"
+                : "#3B82F6",
+          }}
+        >
+          {searchingPlace ? (
+            <ActivityIndicator
+              color="white"
+            />
+          ) : (
+            <Text
+              style={{
+                color: "white",
+                fontWeight: "bold",
+              }}
+            >
+              검색
+            </Text>
+          )}
+        </Pressable>
+      </View>
+
+      {selectedPlace && (
+        <View
+          style={{
+            marginTop: 10,
+            padding: 12,
+            borderRadius: 12,
+            backgroundColor:
+              "#ECFDF5",
+          }}
+        >
+          <Text
+            style={{
+              color: "#059669",
+              fontWeight: "bold",
+            }}
+          >
+            ✓ 지도 위치 연결됨
+          </Text>
+
+          {address ? (
+            <Text
+              style={{
+                marginTop: 5,
+                color: "#4B5563",
+                fontSize: 13,
+              }}
+            >
+              {address}
+            </Text>
+          ) : null}
+        </View>
+      )}
+
+      {placeResults.length >
+        0 && (
+        <View
+          style={{
+            marginTop: 10,
+            marginBottom: 18,
+            backgroundColor:
+              "white",
+            borderRadius: 14,
+            overflow: "hidden",
+          }}
+        >
+          {placeResults.map(
+            (
+              place,
+              index
+            ) => (
+              <Pressable
+                key={
+                  place.id ||
+                  `${place.name}-${index}`
+                }
+                onPress={() =>
+                  handleSelectPlace(
+                    place
+                  )
+                }
+                style={{
+                  padding: 14,
+
+                  borderBottomWidth:
+                    index <
+                    placeResults.length -
+                      1
+                      ? 1
+                      : 0,
+
+                  borderBottomColor:
+                    "#E5E7EB",
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 16,
+                    fontWeight: "bold",
+                    color: "#111827",
+                  }}
+                >
+                  {place.name}
+                </Text>
+
+                <Text
+                  style={{
+                    marginTop: 5,
+                    color: "#6B7280",
+                    fontSize: 13,
+                    lineHeight: 18,
+                  }}
+                >
+                  {place.address}
+                </Text>
+              </Pressable>
+            )
+          )}
+        </View>
+      )}
 
       <Text
         style={{
           fontSize: 16,
           fontWeight: "bold",
+          marginTop: 20,
           marginBottom: 10,
+          color: "#374151",
         }}
       >
         장소 종류
@@ -299,40 +769,47 @@ export default function CreateScheduleScreen() {
           marginBottom: 22,
         }}
       >
-        {categories.map((item) => {
-          const selected =
-            category === item;
+        {categories.map(
+          (item) => {
+            const selected =
+              category === item;
 
-          return (
-            <Pressable
-              key={item}
-              onPress={() =>
-                setCategory(item)
-              }
-              style={{
-                paddingHorizontal: 15,
-                paddingVertical: 10,
-                borderRadius: 20,
-
-                backgroundColor: selected
-                  ? "#3B82F6"
-                  : "white",
-              }}
-            >
-              <Text
+            return (
+              <Pressable
+                key={item}
+                onPress={() =>
+                  setCategory(
+                    item
+                  )
+                }
                 style={{
-                  color: selected
-                    ? "white"
-                    : "#374151",
+                  paddingHorizontal: 15,
+                  paddingVertical: 10,
+                  borderRadius: 20,
 
-                  fontWeight: "bold",
+                  backgroundColor:
+                    selected
+                      ? "#3B82F6"
+                      : "white",
                 }}
               >
-                {item}
-              </Text>
-            </Pressable>
-          );
-        })}
+                <Text
+                  style={{
+                    color:
+                      selected
+                        ? "white"
+                        : "#374151",
+
+                    fontWeight:
+                      "bold",
+                  }}
+                >
+                  {item}
+                </Text>
+              </Pressable>
+            );
+          }
+        )}
       </View>
 
       <Text
@@ -340,6 +817,7 @@ export default function CreateScheduleScreen() {
           fontSize: 16,
           fontWeight: "bold",
           marginBottom: 10,
+          color: "#374151",
         }}
       >
         예상 소요시간
@@ -353,48 +831,63 @@ export default function CreateScheduleScreen() {
           marginBottom: 22,
         }}
       >
-        {durations.map((minutes) => {
-          const selected =
-            durationMinutes === minutes;
+        {durations.map(
+          (minutes) => {
+            const selected =
+              durationMinutes ===
+              minutes;
 
-          return (
-            <Pressable
-              key={minutes}
-              onPress={() =>
-                setDurationMinutes(minutes)
-              }
-              style={{
-                paddingHorizontal: 14,
-                paddingVertical: 10,
-                borderRadius: 20,
-
-                backgroundColor: selected
-                  ? "#3B82F6"
-                  : "white",
-              }}
-            >
-              <Text
+            return (
+              <Pressable
+                key={minutes}
+                onPress={() =>
+                  setDurationMinutes(
+                    minutes
+                  )
+                }
                 style={{
-                  color: selected
-                    ? "white"
-                    : "#374151",
+                  paddingHorizontal: 14,
+                  paddingVertical: 10,
+                  borderRadius: 20,
 
-                  fontWeight: "bold",
+                  backgroundColor:
+                    selected
+                      ? "#3B82F6"
+                      : "white",
                 }}
               >
-                {minutes < 60
-                  ? `${minutes}분`
-                  : minutes % 60 === 0
-                  ? `${minutes / 60}시간`
-                  : `${Math.floor(
-                      minutes / 60
-                    )}시간 ${
-                      minutes % 60
-                    }분`}
-              </Text>
-            </Pressable>
-          );
-        })}
+                <Text
+                  style={{
+                    color:
+                      selected
+                        ? "white"
+                        : "#374151",
+
+                    fontWeight:
+                      "bold",
+                  }}
+                >
+                  {minutes < 60
+                    ? `${minutes}분`
+                    : minutes %
+                          60 ===
+                        0
+                    ? `${
+                        minutes /
+                        60
+                      }시간`
+                    : `${Math.floor(
+                        minutes /
+                          60
+                      )}시간 ${
+                        minutes %
+                        60
+                      }분`}
+                </Text>
+              </Pressable>
+            );
+          }
+        )}
       </View>
 
       <Text
@@ -410,10 +903,13 @@ export default function CreateScheduleScreen() {
 
       <Pressable
         onPress={() =>
-          setShowDatePicker(true)
+          setShowDatePicker(
+            true
+          )
         }
         style={{
-          backgroundColor: "white",
+          backgroundColor:
+            "white",
           borderRadius: 12,
           padding: 15,
           marginBottom: 15,
@@ -434,24 +930,31 @@ export default function CreateScheduleScreen() {
           value={date}
           mode="date"
           display={
-            Platform.OS === "ios"
+            Platform.OS ===
+            "ios"
               ? "spinner"
               : "default"
           }
           themeVariant="light"
           textColor="#111827"
-          onChange={handleDateChange}
+          onChange={
+            handleDateChange
+          }
         />
       )}
 
-      {Platform.OS === "ios" &&
+      {Platform.OS ===
+        "ios" &&
         showDatePicker && (
           <Pressable
             onPress={() =>
-              setShowDatePicker(false)
+              setShowDatePicker(
+                false
+              )
             }
             style={{
-              alignSelf: "flex-end",
+              alignSelf:
+                "flex-end",
               marginBottom: 15,
             }}
           >
@@ -479,10 +982,13 @@ export default function CreateScheduleScreen() {
 
       <Pressable
         onPress={() =>
-          setShowTimePicker(true)
+          setShowTimePicker(
+            true
+          )
         }
         style={{
-          backgroundColor: "white",
+          backgroundColor:
+            "white",
           borderRadius: 12,
           padding: 15,
           marginBottom: 15,
@@ -504,24 +1010,31 @@ export default function CreateScheduleScreen() {
           mode="time"
           is24Hour={true}
           display={
-            Platform.OS === "ios"
+            Platform.OS ===
+            "ios"
               ? "spinner"
               : "default"
           }
           themeVariant="light"
           textColor="#111827"
-          onChange={handleTimeChange}
+          onChange={
+            handleTimeChange
+          }
         />
       )}
 
-      {Platform.OS === "ios" &&
+      {Platform.OS ===
+        "ios" &&
         showTimePicker && (
           <Pressable
             onPress={() =>
-              setShowTimePicker(false)
+              setShowTimePicker(
+                false
+              )
             }
             style={{
-              alignSelf: "flex-end",
+              alignSelf:
+                "flex-end",
               marginBottom: 15,
             }}
           >
@@ -542,6 +1055,7 @@ export default function CreateScheduleScreen() {
           fontWeight: "bold",
           marginTop: 5,
           marginBottom: 8,
+          color: "#374151",
         }}
       >
         메모
@@ -560,7 +1074,9 @@ export default function CreateScheduleScreen() {
       >
         <AppButton
           title="일정 저장"
-          onPress={handleSave}
+          onPress={
+            handleSave
+          }
         />
       </View>
     </ScrollView>

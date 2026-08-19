@@ -1,17 +1,25 @@
 import DateTimePicker, {
   DateTimePickerEvent,
 } from "@react-native-community/datetimepicker";
+
 import {
   router,
   useLocalSearchParams,
 } from "expo-router";
-import { useEffect, useState } from "react";
+
 import {
+  useEffect,
+  useState,
+} from "react";
+
+import {
+  ActivityIndicator,
   Alert,
   Platform,
   Pressable,
   ScrollView,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -19,10 +27,18 @@ import AppButton from "../../components/AppButton";
 import AppInput from "../../components/AppInput";
 
 import {
-  getSchedule,
   getTrip,
-  updateSchedule,
 } from "../../lib/storage";
+
+import {
+  PlaceResult,
+  searchPlaces,
+} from "../../services/place";
+
+import {
+  fetchSchedule,
+  updateServerSchedule,
+} from "../../services/schedule";
 
 import {
   ScheduleCategory,
@@ -47,87 +63,186 @@ const durations = [
 ];
 
 export default function EditScheduleScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id } =
+    useLocalSearchParams<{
+      id: string;
+    }>();
 
-  const [title, setTitle] = useState("");
-  const [location, setLocation] = useState("");
+  const [title, setTitle] =
+    useState("");
 
-  const [category, setCategory] =
-    useState<ScheduleCategory>("관광");
+  const [location, setLocation] =
+    useState("");
 
-  const [durationMinutes, setDurationMinutes] =
+  const [address, setAddress] =
+    useState("");
+
+  const [
+    latitude,
+    setLatitude,
+  ] =
+    useState<number | undefined>(
+      undefined
+    );
+
+  const [
+    longitude,
+    setLongitude,
+  ] =
+    useState<number | undefined>(
+      undefined
+    );
+
+  const [
+    placeId,
+    setPlaceId,
+  ] =
+    useState<string | undefined>(
+      undefined
+    );
+
+  const [
+    placeResults,
+    setPlaceResults,
+  ] =
+    useState<PlaceResult[]>([]);
+
+  const [
+    searchingPlace,
+    setSearchingPlace,
+  ] =
+    useState(false);
+
+  const [
+    selectedPlace,
+    setSelectedPlace,
+  ] =
+    useState(false);
+
+  const [
+    category,
+    setCategory,
+  ] =
+    useState<ScheduleCategory>(
+      "관광"
+    );
+
+  const [
+    durationMinutes,
+    setDurationMinutes,
+  ] =
     useState(60);
 
-  const [memo, setMemo] = useState("");
+  const [memo, setMemo] =
+    useState("");
 
-  const [date, setDate] = useState(new Date());
-  const [time, setTime] = useState(new Date());
+  const [date, setDate] =
+    useState(new Date());
 
-  const [showDatePicker, setShowDatePicker] =
+  const [time, setTime] =
+    useState(new Date());
+
+  const [
+    showDatePicker,
+    setShowDatePicker,
+  ] =
     useState(false);
 
-  const [showTimePicker, setShowTimePicker] =
+  const [
+    showTimePicker,
+    setShowTimePicker,
+  ] =
     useState(false);
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] =
+    useState(true);
 
-  function formatDate(value: Date) {
-    const year = value.getFullYear();
+  function formatDate(
+    value: Date
+  ) {
+    const year =
+      value.getFullYear();
 
-    const month = String(
-      value.getMonth() + 1
-    ).padStart(2, "0");
+    const month =
+      String(
+        value.getMonth() + 1
+      ).padStart(2, "0");
 
-    const day = String(
-      value.getDate()
-    ).padStart(2, "0");
+    const day =
+      String(
+        value.getDate()
+      ).padStart(2, "0");
 
     return `${year}-${month}-${day}`;
   }
 
-  function formatTime(value: Date) {
-    const hour = String(
-      value.getHours()
-    ).padStart(2, "0");
+  function formatTime(
+    value: Date
+  ) {
+    const hour =
+      String(
+        value.getHours()
+      ).padStart(2, "0");
 
-    const minute = String(
-      value.getMinutes()
-    ).padStart(2, "0");
+    const minute =
+      String(
+        value.getMinutes()
+      ).padStart(2, "0");
 
     return `${hour}:${minute}`;
   }
 
-  function parseDate(dateString: string) {
-    const [year, month, day] = dateString
-      .split("-")
-      .map(Number);
-
-    const value = new Date(
+  function parseDate(
+    value: string
+  ) {
+    const [
       year,
-      month - 1,
-      day
+      month,
+      day,
+    ] =
+      value
+        .split("-")
+        .map(Number);
+
+    const result =
+      new Date(
+        year,
+        month - 1,
+        day
+      );
+
+    result.setHours(
+      0,
+      0,
+      0,
+      0
     );
 
-    value.setHours(0, 0, 0, 0);
-
-    return value;
+    return result;
   }
 
-  function parseTime(timeString: string) {
-    const [hour, minute] = timeString
-      .split(":")
-      .map(Number);
+  function parseTime(
+    value: string
+  ) {
+    const [
+      hour,
+      minute,
+    ] =
+      value
+        .split(":")
+        .map(Number);
 
-    const value = new Date();
+    const result =
+      new Date();
 
-    value.setHours(
+    result.setHours(
       hour,
       minute,
       0,
       0
     );
 
-    return value;
+    return result;
   }
 
   useEffect(() => {
@@ -137,69 +252,221 @@ export default function EditScheduleScreen() {
         return;
       }
 
-      const schedule =
-        await getSchedule(id);
+      try {
+        const schedule =
+          await fetchSchedule(
+            id
+          );
 
-      if (!schedule) {
+        setTitle(
+          schedule.title
+        );
+
+        setLocation(
+          schedule.location
+        );
+
+        setAddress(
+          schedule.address ?? ""
+        );
+
+        setLatitude(
+          schedule.latitude ??
+            undefined
+        );
+
+        setLongitude(
+          schedule.longitude ??
+            undefined
+        );
+
+        setPlaceId(
+          schedule.placeId ??
+            undefined
+        );
+
+        setSelectedPlace(
+          Boolean(
+            schedule.latitude !=
+              null &&
+              schedule.longitude !=
+                null
+          )
+        );
+
+        setCategory(
+          schedule.category ??
+            "관광"
+        );
+
+        setDurationMinutes(
+          schedule.durationMinutes ??
+            60
+        );
+
+        setMemo(
+          schedule.memo ?? ""
+        );
+
+        setDate(
+          parseDate(
+            schedule.date
+          )
+        );
+
+        setTime(
+          parseTime(
+            schedule.time
+          )
+        );
+      } catch (error) {
+        console.error(
+          "일정 조회 실패:",
+          error
+        );
+
         Alert.alert(
           "오류",
           "일정을 찾을 수 없습니다.",
           [
             {
               text: "확인",
-              onPress: () => router.back(),
+
+              onPress: () =>
+                router.back(),
             },
           ]
         );
-
-        return;
+      } finally {
+        setLoading(false);
       }
-
-      setTitle(schedule.title);
-
-      setLocation(schedule.location);
-
-      setDate(
-        parseDate(schedule.date)
-      );
-
-      setTime(
-        parseTime(schedule.time)
-      );
-
-      // 예전에 만든 일정도 깨지지 않도록 기본값 처리
-      setCategory(
-        schedule.category ?? "관광"
-      );
-
-      setDurationMinutes(
-        schedule.durationMinutes ?? 60
-      );
-
-      setMemo(
-        schedule.memo ?? ""
-      );
-
-      setLoading(false);
     }
 
     loadSchedule();
   }, [id]);
 
+  function handleLocationChange(
+    text: string
+  ) {
+    setLocation(text);
+
+    // 장소명을 직접 수정하면
+    // 기존 좌표가 틀릴 수 있으므로 초기화
+    setAddress("");
+    setLatitude(undefined);
+    setLongitude(undefined);
+    setPlaceId(undefined);
+    setSelectedPlace(false);
+    setPlaceResults([]);
+  }
+
+  async function handlePlaceSearch() {
+    if (!location.trim()) {
+      Alert.alert(
+        "장소 검색",
+        "검색할 장소를 입력해주세요."
+      );
+
+      return;
+    }
+
+    try {
+      setSearchingPlace(true);
+
+      const trip =
+        await getTrip();
+
+      const query =
+        trip?.city
+          ? `${location.trim()} ${trip.city}`
+          : location.trim();
+
+      const results =
+        await searchPlaces(
+          query
+        );
+
+      if (
+        results.length === 0
+      ) {
+        Alert.alert(
+          "검색 결과 없음",
+          "검색된 장소가 없습니다."
+        );
+
+        return;
+      }
+
+      setPlaceResults(
+        results
+      );
+    } catch (error) {
+      console.error(
+        "장소 검색 실패:",
+        error
+      );
+
+      Alert.alert(
+        "장소 검색 실패",
+        "장소를 검색하지 못했습니다."
+      );
+    } finally {
+      setSearchingPlace(false);
+    }
+  }
+
+  function handleSelectPlace(
+    place: PlaceResult
+  ) {
+    setLocation(
+      place.name
+    );
+
+    setAddress(
+      place.address
+    );
+
+    setLatitude(
+      place.latitude
+    );
+
+    setLongitude(
+      place.longitude
+    );
+
+    setPlaceId(
+      place.id
+    );
+
+    setSelectedPlace(true);
+
+    setPlaceResults([]);
+  }
+
   function handleDateChange(
     event: DateTimePickerEvent,
     selectedDate?: Date
   ) {
-    if (Platform.OS === "android") {
-      setShowDatePicker(false);
+    if (
+      Platform.OS ===
+      "android"
+    ) {
+      setShowDatePicker(
+        false
+      );
     }
 
-    if (event.type === "dismissed") {
+    if (
+      event.type ===
+      "dismissed"
+    ) {
       return;
     }
 
     if (selectedDate) {
-      setDate(selectedDate);
+      setDate(
+        selectedDate
+      );
     }
   }
 
@@ -207,35 +474,48 @@ export default function EditScheduleScreen() {
     event: DateTimePickerEvent,
     selectedTime?: Date
   ) {
-    if (Platform.OS === "android") {
-      setShowTimePicker(false);
+    if (
+      Platform.OS ===
+      "android"
+    ) {
+      setShowTimePicker(
+        false
+      );
     }
 
-    if (event.type === "dismissed") {
+    if (
+      event.type ===
+      "dismissed"
+    ) {
       return;
     }
 
     if (selectedTime) {
-      setTime(selectedTime);
+      setTime(
+        selectedTime
+      );
     }
   }
 
   async function handleUpdate() {
-    if (!id) return;
+    if (!id) {
+      return;
+    }
 
     if (
       !title.trim() ||
       !location.trim()
     ) {
       Alert.alert(
-        "알림",
+        "입력 확인",
         "일정 이름과 장소를 입력해주세요."
       );
 
       return;
     }
 
-    const trip = await getTrip();
+    const trip =
+      await getTrip();
 
     if (!trip) {
       Alert.alert(
@@ -247,10 +527,14 @@ export default function EditScheduleScreen() {
     }
 
     const tripStart =
-      parseDate(trip.startDate);
+      parseDate(
+        trip.startDate
+      );
 
     const tripEnd =
-      parseDate(trip.endDate);
+      parseDate(
+        trip.endDate
+      );
 
     const selectedDate =
       new Date(date);
@@ -263,8 +547,10 @@ export default function EditScheduleScreen() {
     );
 
     if (
-      selectedDate < tripStart ||
-      selectedDate > tripEnd
+      selectedDate <
+        tripStart ||
+      selectedDate >
+        tripEnd
     ) {
       Alert.alert(
         "여행 기간 확인",
@@ -274,34 +560,68 @@ export default function EditScheduleScreen() {
       return;
     }
 
-    await updateSchedule({
-      id,
-
-      title: title.trim(),
-
-      location: location.trim(),
-
-      date: formatDate(date),
-
-      time: formatTime(time),
-
-      category,
-
-      durationMinutes,
-
-      memo: memo.trim(),
-    });
-
-    Alert.alert(
-      "완료",
-      "일정이 수정되었습니다.",
-      [
+    try {
+      await updateServerSchedule(
+        id,
         {
-          text: "확인",
-          onPress: () => router.back(),
-        },
-      ]
-    );
+          title:
+            title.trim(),
+
+          location:
+            location.trim(),
+
+          address:
+            address ||
+            undefined,
+
+          latitude,
+
+          longitude,
+
+          placeId,
+
+          category,
+
+          durationMinutes,
+
+          date:
+            formatDate(
+              date
+            ),
+
+          time:
+            formatTime(
+              time
+            ),
+
+          memo:
+            memo.trim(),
+        }
+      );
+
+      Alert.alert(
+        "완료",
+        "일정이 수정되었습니다.",
+        [
+          {
+            text: "확인",
+
+            onPress: () =>
+              router.back(),
+          },
+        ]
+      );
+    } catch (error) {
+      console.error(
+        "일정 수정 실패:",
+        error
+      );
+
+      Alert.alert(
+        "수정 실패",
+        "일정을 수정하지 못했습니다."
+      );
+    }
   }
 
   if (loading) {
@@ -309,13 +629,16 @@ export default function EditScheduleScreen() {
       <View
         style={{
           flex: 1,
-          justifyContent: "center",
-          alignItems: "center",
-          backgroundColor: "#F5F7FB",
+          justifyContent:
+            "center",
+          alignItems:
+            "center",
+          backgroundColor:
+            "#F5F7FB",
         }}
       >
         <Text>
-          일정을 불러오는 중...
+          서버에서 일정을 불러오는 중...
         </Text>
       </View>
     );
@@ -325,19 +648,22 @@ export default function EditScheduleScreen() {
     <ScrollView
       style={{
         flex: 1,
-        backgroundColor: "#F5F7FB",
+        backgroundColor:
+          "#F5F7FB",
       }}
       contentContainerStyle={{
         paddingHorizontal: 20,
         paddingTop: 70,
         paddingBottom: 70,
       }}
+      keyboardShouldPersistTaps="handled"
     >
       <Text
         style={{
           fontSize: 32,
           fontWeight: "bold",
           marginBottom: 30,
+          color: "#111827",
         }}
       >
         일정 수정
@@ -346,19 +672,194 @@ export default function EditScheduleScreen() {
       <AppInput
         placeholder="일정 이름"
         value={title}
-        onChangeText={setTitle}
-      />
-
-      <AppInput
-        placeholder="장소"
-        value={location}
-        onChangeText={setLocation}
+        onChangeText={
+          setTitle
+        }
       />
 
       <Text
         style={{
           fontSize: 16,
           fontWeight: "bold",
+          color: "#374151",
+          marginBottom: 8,
+        }}
+      >
+        장소
+      </Text>
+
+      <View
+        style={{
+          flexDirection: "row",
+          gap: 8,
+        }}
+      >
+        <TextInput
+          value={location}
+          onChangeText={
+            handleLocationChange
+          }
+          placeholder="예: 센소지"
+          placeholderTextColor="#9CA3AF"
+          returnKeyType="search"
+          onSubmitEditing={
+            handlePlaceSearch
+          }
+          style={{
+            flex: 1,
+            backgroundColor:
+              "white",
+            color: "#111827",
+            borderRadius: 12,
+            paddingHorizontal: 14,
+            paddingVertical: 13,
+            fontSize: 16,
+          }}
+        />
+
+        <Pressable
+          onPress={
+            handlePlaceSearch
+          }
+          disabled={
+            searchingPlace
+          }
+          style={{
+            paddingHorizontal: 18,
+            borderRadius: 12,
+            justifyContent:
+              "center",
+
+            backgroundColor:
+              searchingPlace
+                ? "#CBD5E1"
+                : "#3B82F6",
+          }}
+        >
+          {searchingPlace ? (
+            <ActivityIndicator
+              color="white"
+            />
+          ) : (
+            <Text
+              style={{
+                color: "white",
+                fontWeight: "bold",
+              }}
+            >
+              검색
+            </Text>
+          )}
+        </Pressable>
+      </View>
+
+      {selectedPlace && (
+        <View
+          style={{
+            marginTop: 10,
+            padding: 12,
+            borderRadius: 12,
+            backgroundColor:
+              "#ECFDF5",
+          }}
+        >
+          <Text
+            style={{
+              color: "#059669",
+              fontWeight: "bold",
+            }}
+          >
+            ✓ 지도 위치 연결됨
+          </Text>
+
+          {address ? (
+            <Text
+              style={{
+                marginTop: 5,
+                color: "#4B5563",
+                fontSize: 13,
+                lineHeight: 18,
+              }}
+            >
+              {address}
+            </Text>
+          ) : null}
+        </View>
+      )}
+
+      {placeResults.length >
+        0 && (
+        <View
+          style={{
+            marginTop: 10,
+            marginBottom: 18,
+            backgroundColor:
+              "white",
+            borderRadius: 14,
+            overflow:
+              "hidden",
+          }}
+        >
+          {placeResults.map(
+            (
+              place,
+              index
+            ) => (
+              <Pressable
+                key={
+                  place.id ||
+                  `${place.name}-${index}`
+                }
+                onPress={() =>
+                  handleSelectPlace(
+                    place
+                  )
+                }
+                style={{
+                  padding: 14,
+
+                  borderBottomWidth:
+                    index <
+                    placeResults.length -
+                      1
+                      ? 1
+                      : 0,
+
+                  borderBottomColor:
+                    "#E5E7EB",
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 16,
+                    fontWeight: "bold",
+                    color: "#111827",
+                  }}
+                >
+                  {place.name}
+                </Text>
+
+                <Text
+                  style={{
+                    marginTop: 5,
+                    color: "#6B7280",
+                    fontSize: 13,
+                  }}
+                >
+                  {place.address}
+                </Text>
+              </Pressable>
+            )
+          )}
+        </View>
+      )}
+
+      <Text
+        style={{
+          marginTop: 20,
+          fontSize: 16,
+          fontWeight: "bold",
+          color: "#374151",
           marginBottom: 10,
         }}
       >
@@ -373,40 +874,47 @@ export default function EditScheduleScreen() {
           marginBottom: 22,
         }}
       >
-        {categories.map((item) => {
-          const selected =
-            category === item;
+        {categories.map(
+          (item) => {
+            const selected =
+              category === item;
 
-          return (
-            <Pressable
-              key={item}
-              onPress={() =>
-                setCategory(item)
-              }
-              style={{
-                paddingHorizontal: 15,
-                paddingVertical: 10,
-                borderRadius: 20,
-
-                backgroundColor: selected
-                  ? "#3B82F6"
-                  : "white",
-              }}
-            >
-              <Text
+            return (
+              <Pressable
+                key={item}
+                onPress={() =>
+                  setCategory(
+                    item
+                  )
+                }
                 style={{
-                  color: selected
-                    ? "white"
-                    : "#374151",
+                  paddingHorizontal: 15,
+                  paddingVertical: 10,
+                  borderRadius: 20,
 
-                  fontWeight: "bold",
+                  backgroundColor:
+                    selected
+                      ? "#3B82F6"
+                      : "white",
                 }}
               >
-                {item}
-              </Text>
-            </Pressable>
-          );
-        })}
+                <Text
+                  style={{
+                    color:
+                      selected
+                        ? "white"
+                        : "#374151",
+
+                    fontWeight:
+                      "bold",
+                  }}
+                >
+                  {item}
+                </Text>
+              </Pressable>
+            );
+          }
+        )}
       </View>
 
       <Text
@@ -414,6 +922,7 @@ export default function EditScheduleScreen() {
           fontSize: 16,
           fontWeight: "bold",
           marginBottom: 10,
+          color: "#374151",
         }}
       >
         예상 소요시간
@@ -427,56 +936,65 @@ export default function EditScheduleScreen() {
           marginBottom: 22,
         }}
       >
-        {durations.map((minutes) => {
-          const selected =
-            durationMinutes === minutes;
-
-          return (
+        {durations.map(
+          (minutes) => (
             <Pressable
               key={minutes}
               onPress={() =>
-                setDurationMinutes(minutes)
+                setDurationMinutes(
+                  minutes
+                )
               }
               style={{
                 paddingHorizontal: 14,
                 paddingVertical: 10,
                 borderRadius: 20,
 
-                backgroundColor: selected
-                  ? "#3B82F6"
-                  : "white",
+                backgroundColor:
+                  durationMinutes ===
+                  minutes
+                    ? "#3B82F6"
+                    : "white",
               }}
             >
               <Text
                 style={{
-                  color: selected
-                    ? "white"
-                    : "#374151",
+                  color:
+                    durationMinutes ===
+                    minutes
+                      ? "white"
+                      : "#374151",
 
                   fontWeight: "bold",
                 }}
               >
                 {minutes < 60
                   ? `${minutes}분`
-                  : minutes % 60 === 0
-                  ? `${minutes / 60}시간`
+                  : minutes % 60 ===
+                    0
+                  ? `${
+                      minutes /
+                      60
+                    }시간`
                   : `${Math.floor(
-                      minutes / 60
+                      minutes /
+                        60
                     )}시간 ${
-                      minutes % 60
+                      minutes %
+                      60
                     }분`}
               </Text>
             </Pressable>
-          );
-        })}
+          )
+        )}
       </View>
 
       <Text
         style={{
           fontSize: 15,
           fontWeight: "bold",
-          marginBottom: 8,
           color: "#374151",
+          marginBottom: 8,
         }}
       >
         날짜
@@ -484,10 +1002,13 @@ export default function EditScheduleScreen() {
 
       <Pressable
         onPress={() =>
-          setShowDatePicker(true)
+          setShowDatePicker(
+            true
+          )
         }
         style={{
-          backgroundColor: "white",
+          backgroundColor:
+            "white",
           borderRadius: 12,
           padding: 15,
           marginBottom: 15,
@@ -495,8 +1016,8 @@ export default function EditScheduleScreen() {
       >
         <Text
           style={{
-            fontSize: 16,
             color: "#111827",
+            fontSize: 16,
           }}
         >
           📅 {formatDate(date)}
@@ -508,44 +1029,25 @@ export default function EditScheduleScreen() {
           value={date}
           mode="date"
           display={
-            Platform.OS === "ios"
+            Platform.OS ===
+            "ios"
               ? "spinner"
               : "default"
           }
           themeVariant="light"
           textColor="#111827"
-          onChange={handleDateChange}
+          onChange={
+            handleDateChange
+          }
         />
       )}
-
-      {Platform.OS === "ios" &&
-        showDatePicker && (
-          <Pressable
-            onPress={() =>
-              setShowDatePicker(false)
-            }
-            style={{
-              alignSelf: "flex-end",
-              marginBottom: 15,
-            }}
-          >
-            <Text
-              style={{
-                color: "#2563EB",
-                fontWeight: "bold",
-              }}
-            >
-              날짜 선택 완료
-            </Text>
-          </Pressable>
-        )}
 
       <Text
         style={{
           fontSize: 15,
           fontWeight: "bold",
-          marginBottom: 8,
           color: "#374151",
+          marginBottom: 8,
         }}
       >
         시간
@@ -553,10 +1055,13 @@ export default function EditScheduleScreen() {
 
       <Pressable
         onPress={() =>
-          setShowTimePicker(true)
+          setShowTimePicker(
+            true
+          )
         }
         style={{
-          backgroundColor: "white",
+          backgroundColor:
+            "white",
           borderRadius: 12,
           padding: 15,
           marginBottom: 15,
@@ -564,8 +1069,8 @@ export default function EditScheduleScreen() {
       >
         <Text
           style={{
-            fontSize: 16,
             color: "#111827",
+            fontSize: 16,
           }}
         >
           🕐 {formatTime(time)}
@@ -578,37 +1083,18 @@ export default function EditScheduleScreen() {
           mode="time"
           is24Hour={true}
           display={
-            Platform.OS === "ios"
+            Platform.OS ===
+            "ios"
               ? "spinner"
               : "default"
           }
           themeVariant="light"
           textColor="#111827"
-          onChange={handleTimeChange}
+          onChange={
+            handleTimeChange
+          }
         />
       )}
-
-      {Platform.OS === "ios" &&
-        showTimePicker && (
-          <Pressable
-            onPress={() =>
-              setShowTimePicker(false)
-            }
-            style={{
-              alignSelf: "flex-end",
-              marginBottom: 15,
-            }}
-          >
-            <Text
-              style={{
-                color: "#2563EB",
-                fontWeight: "bold",
-              }}
-            >
-              시간 선택 완료
-            </Text>
-          </Pressable>
-        )}
 
       <Text
         style={{
@@ -616,6 +1102,7 @@ export default function EditScheduleScreen() {
           fontWeight: "bold",
           marginTop: 5,
           marginBottom: 8,
+          color: "#374151",
         }}
       >
         메모
@@ -624,7 +1111,9 @@ export default function EditScheduleScreen() {
       <AppInput
         placeholder="예: 입장권 미리 구매"
         value={memo}
-        onChangeText={setMemo}
+        onChangeText={
+          setMemo
+        }
       />
 
       <View
@@ -634,7 +1123,9 @@ export default function EditScheduleScreen() {
       >
         <AppButton
           title="수정 내용 저장"
-          onPress={handleUpdate}
+          onPress={
+            handleUpdate
+          }
         />
       </View>
     </ScrollView>

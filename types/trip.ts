@@ -26,6 +26,7 @@ export interface Schedule {
   id: string;
   title: string;
   location: string;
+  address?: string;
   date: string;
   time: string;
 

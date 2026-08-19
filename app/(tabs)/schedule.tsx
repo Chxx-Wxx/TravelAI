@@ -1,5 +1,14 @@
-import { router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import {
+  router,
+  useFocusEffect,
+} from "expo-router";
+
+import {
+  useCallback,
+  useMemo,
+  useState,
+} from "react";
+
 import {
   Alert,
   Pressable,
@@ -9,119 +18,294 @@ import {
 } from "react-native";
 
 import AppButton from "../../components/AppButton";
+
 import {
-  deleteSchedule,
-  getSchedules,
   getTrip,
 } from "../../lib/storage";
-import { Schedule, Trip } from "../../types";
 
-function parseDate(dateString: string) {
-  const [year, month, day] = dateString.split("-").map(Number);
-  return new Date(year, month - 1, day);
+import {
+  deleteServerSchedule,
+  fetchSchedules,
+} from "../../services/schedule";
+
+import {
+  Schedule,
+  Trip,
+} from "../../types";
+
+function parseDate(
+  dateString: string
+) {
+  const [
+    year,
+    month,
+    day,
+  ] =
+    dateString
+      .split("-")
+      .map(Number);
+
+  return new Date(
+    year,
+    month - 1,
+    day
+  );
 }
 
 function calculateDayNumber(
   tripStartDate: string,
   scheduleDate: string
 ) {
-  const start = parseDate(tripStartDate);
-  const target = parseDate(scheduleDate);
+  const start =
+    parseDate(
+      tripStartDate
+    );
+
+  const target =
+    parseDate(
+      scheduleDate
+    );
 
   const difference =
-    target.getTime() - start.getTime();
+    target.getTime() -
+    start.getTime();
 
-  return Math.floor(difference / (1000 * 60 * 60 * 24)) + 1;
+  return (
+    Math.floor(
+      difference /
+        (1000 *
+          60 *
+          60 *
+          24)
+    ) + 1
+  );
 }
 
-function formatDuration(minutes?: number) {
-  if (!minutes) return null;
+function formatDuration(
+  minutes?: number
+) {
+  if (!minutes) {
+    return null;
+  }
 
   if (minutes < 60) {
     return `${minutes}분`;
   }
 
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
+  const hours =
+    Math.floor(
+      minutes / 60
+    );
 
-  if (remainingMinutes === 0) {
+  const remainingMinutes =
+    minutes % 60;
+
+  if (
+    remainingMinutes === 0
+  ) {
     return `${hours}시간`;
   }
 
   return `${hours}시간 ${remainingMinutes}분`;
 }
 
-function timeToMinutes(time: string) {
-  const [hour, minute] = time.split(":").map(Number);
-  return hour * 60 + minute;
+function timeToMinutes(
+  time: string
+) {
+  const [
+    hour,
+    minute,
+  ] =
+    time
+      .split(":")
+      .map(Number);
+
+  return (
+    hour * 60 +
+    minute
+  );
 }
 
 function calculateEndTime(
   startTime: string,
   durationMinutes?: number
 ) {
-  if (!durationMinutes) return null;
+  if (!durationMinutes) {
+    return null;
+  }
 
-  const start = timeToMinutes(startTime);
-  const end = start + durationMinutes;
+  const start =
+    timeToMinutes(
+      startTime
+    );
 
-  const endHour = Math.floor(end / 60) % 24;
-  const endMinute = end % 60;
+  const end =
+    start +
+    durationMinutes;
 
-  return `${String(endHour).padStart(2, "0")}:${String(
+  const endHour =
+    Math.floor(
+      end / 60
+    ) % 24;
+
+  const endMinute =
+    end % 60;
+
+  return `${String(
+    endHour
+  ).padStart(
+    2,
+    "0"
+  )}:${String(
     endMinute
-  ).padStart(2, "0")}`;
+  ).padStart(
+    2,
+    "0"
+  )}`;
 }
 
 function calculateGapMinutes(
   current: Schedule,
   next?: Schedule
 ) {
-  if (!next || !current.durationMinutes) return null;
-
-  const currentStart = timeToMinutes(current.time);
-  const currentEnd =
-    currentStart + current.durationMinutes;
-
-  let nextStart = timeToMinutes(next.time);
-
-  if (nextStart < currentStart) {
-    nextStart += 24 * 60;
+  if (
+    !next ||
+    !current.durationMinutes
+  ) {
+    return null;
   }
 
-  return nextStart - currentEnd;
+  const currentStart =
+    timeToMinutes(
+      current.time
+    );
+
+  const currentEnd =
+    currentStart +
+    current.durationMinutes;
+
+  let nextStart =
+    timeToMinutes(
+      next.time
+    );
+
+  if (
+    nextStart <
+    currentStart
+  ) {
+    nextStart +=
+      24 * 60;
+  }
+
+  return (
+    nextStart -
+    currentEnd
+  );
 }
 
-function formatGap(minutes: number) {
+function formatGap(
+  minutes: number
+) {
   if (minutes === 0) {
     return "바로 다음 일정";
   }
 
   if (minutes < 0) {
-    return `${formatDuration(Math.abs(minutes))} 겹침`;
+    return `${formatDuration(
+      Math.abs(minutes)
+    )} 겹침`;
   }
 
-  return `${formatDuration(minutes)} 여유`;
+  return `${formatDuration(
+    minutes
+  )} 여유`;
 }
 
 export default function ScheduleScreen() {
-  const [schedules, setSchedules] = useState<Schedule[]>([]);
-  const [trip, setTrip] = useState<Trip | null>(null);
+  const [
+    schedules,
+    setSchedules,
+  ] =
+    useState<
+      Schedule[]
+    >([]);
 
-  const loadData = useCallback(async () => {
-    const scheduleData = await getSchedules();
-    const tripData = await getTrip();
+  const [
+    trip,
+    setTrip,
+  ] =
+    useState<
+      Trip | null
+    >(null);
 
-    const sorted = [...scheduleData].sort((a, b) => {
-      const first = `${a.date} ${a.time}`;
-      const second = `${b.date} ${b.time}`;
+  const [
+    loading,
+    setLoading,
+  ] =
+    useState(false);
 
-      return first.localeCompare(second);
-    });
+  const loadData =
+    useCallback(
+      async () => {
+        try {
+          setLoading(
+            true
+          );
 
-    setSchedules(sorted);
-    setTrip(tripData);
-  }, []);
+          const [
+            scheduleData,
+            tripData,
+          ] =
+            await Promise.all([
+              fetchSchedules(),
+              getTrip(),
+            ]);
+
+          const sorted =
+            [
+              ...scheduleData,
+            ].sort(
+              (
+                a,
+                b
+              ) => {
+                const first =
+                  `${a.date} ${a.time}`;
+
+                const second =
+                  `${b.date} ${b.time}`;
+
+                return first.localeCompare(
+                  second
+                );
+              }
+            );
+
+          setSchedules(
+            sorted
+          );
+
+          setTrip(
+            tripData
+          );
+        } catch (error) {
+          console.error(
+            "일정 불러오기 실패:",
+            error
+          );
+
+          Alert.alert(
+            "일정 불러오기 실패",
+            "서버에서 일정을 불러오지 못했습니다. 백엔드와 ngrok 연결을 확인해주세요."
+          );
+        } finally {
+          setLoading(
+            false
+          );
+        }
+      },
+      []
+    );
 
   useFocusEffect(
     useCallback(() => {
@@ -129,44 +313,98 @@ export default function ScheduleScreen() {
     }, [loadData])
   );
 
-  function handleDelete(id: string, title: string) {
-    Alert.alert("일정 삭제", `"${title}" 일정을 삭제할까요?`, [
-      {
-        text: "취소",
-        style: "cancel",
-      },
-      {
-        text: "삭제",
-        style: "destructive",
-        onPress: async () => {
-          await deleteSchedule(id);
-          await loadData();
+  function handleDelete(
+    id: string,
+    title: string
+  ) {
+    Alert.alert(
+      "일정 삭제",
+      `"${title}" 일정을 삭제할까요?`,
+      [
+        {
+          text: "취소",
+          style: "cancel",
         },
-      },
-    ]);
+
+        {
+          text: "삭제",
+          style: "destructive",
+
+          onPress:
+            async () => {
+              try {
+                await deleteServerSchedule(
+                  id
+                );
+
+                await loadData();
+              } catch (
+                error
+              ) {
+                console.error(
+                  "일정 삭제 실패:",
+                  error
+                );
+
+                Alert.alert(
+                  "삭제 실패",
+                  "일정을 삭제하지 못했습니다."
+                );
+              }
+            },
+        },
+      ]
+    );
   }
 
-  const groupedSchedules = useMemo(() => {
-    const grouped: Record<string, Schedule[]> = {};
+  const groupedSchedules =
+    useMemo(() => {
+      const grouped: Record<
+        string,
+        Schedule[]
+      > = {};
 
-    schedules.forEach((schedule) => {
-      if (!grouped[schedule.date]) {
-        grouped[schedule.date] = [];
-      }
+      schedules.forEach(
+        (
+          schedule
+        ) => {
+          if (
+            !grouped[
+              schedule.date
+            ]
+          ) {
+            grouped[
+              schedule.date
+            ] = [];
+          }
 
-      grouped[schedule.date].push(schedule);
-    });
+          grouped[
+            schedule.date
+          ].push(
+            schedule
+          );
+        }
+      );
 
-    return Object.entries(grouped).sort(([dateA], [dateB]) =>
-      dateA.localeCompare(dateB)
-    );
-  }, [schedules]);
+      return Object.entries(
+        grouped
+      ).sort(
+        (
+          [dateA],
+          [dateB]
+        ) =>
+          dateA.localeCompare(
+            dateB
+          )
+      );
+    }, [schedules]);
 
   return (
     <ScrollView
       style={{
         flex: 1,
-        backgroundColor: "#F5F7FB",
+        backgroundColor:
+          "#F5F7FB",
       }}
       contentContainerStyle={{
         paddingHorizontal: 20,
@@ -178,6 +416,7 @@ export default function ScheduleScreen() {
         style={{
           fontSize: 32,
           fontWeight: "bold",
+          color: "#111827",
         }}
       >
         일정
@@ -191,7 +430,9 @@ export default function ScheduleScreen() {
             color: "#6B7280",
           }}
         >
-          {trip.tripName} · {trip.startDate} ~ {trip.endDate}
+          {trip.tripName} ·{" "}
+          {trip.startDate} ~{" "}
+          {trip.endDate}
         </Text>
       )}
 
@@ -202,15 +443,39 @@ export default function ScheduleScreen() {
       >
         <AppButton
           title="+ 일정 추가"
-          onPress={() => router.push("/schedule/create")}
+          onPress={() =>
+            router.push(
+              "/schedule/create"
+            )
+          }
         />
       </View>
 
-      {schedules.length === 0 ? (
+      {loading ? (
         <View
           style={{
             marginTop: 25,
-            backgroundColor: "white",
+            backgroundColor:
+              "white",
+            borderRadius: 16,
+            padding: 20,
+          }}
+        >
+          <Text
+            style={{
+              color: "#6B7280",
+            }}
+          >
+            서버에서 일정을 불러오는 중...
+          </Text>
+        </View>
+      ) : schedules.length ===
+        0 ? (
+        <View
+          style={{
+            marginTop: 25,
+            backgroundColor:
+              "white",
             borderRadius: 16,
             padding: 20,
           }}
@@ -219,6 +484,7 @@ export default function ScheduleScreen() {
             style={{
               fontSize: 18,
               fontWeight: "bold",
+              color: "#111827",
             }}
           >
             아직 일정이 없습니다.
@@ -234,233 +500,158 @@ export default function ScheduleScreen() {
           </Text>
         </View>
       ) : (
-        groupedSchedules.map(([date, daySchedules]) => {
-          const dayNumber = trip
-            ? calculateDayNumber(trip.startDate, date)
-            : null;
+        groupedSchedules.map(
+          (
+            [
+              date,
+              daySchedules,
+            ]
+          ) => {
+            const dayNumber =
+              trip
+                ? calculateDayNumber(
+                    trip.startDate,
+                    date
+                  )
+                : null;
 
-          return (
-            <View
-              key={date}
-              style={{
-                marginTop: 30,
-              }}
-            >
+            return (
               <View
+                key={
+                  date
+                }
                 style={{
-                  marginBottom: 12,
+                  marginTop: 30,
                 }}
               >
-                <Text
+                <View
                   style={{
-                    fontSize: 22,
-                    fontWeight: "bold",
-                    color: "#111827",
+                    marginBottom: 12,
                   }}
                 >
-                  {dayNumber && dayNumber > 0
-                    ? `${dayNumber}일차`
-                    : "여행 일정"}
-                </Text>
+                  <Text
+                    style={{
+                      fontSize: 22,
+                      fontWeight: "bold",
+                      color: "#111827",
+                    }}
+                  >
+                    {dayNumber &&
+                    dayNumber >
+                      0
+                      ? `${dayNumber}일차`
+                      : "여행 일정"}
+                  </Text>
 
-                <Text
-                  style={{
-                    marginTop: 4,
-                    fontSize: 15,
-                    color: "#6B7280",
-                  }}
-                >
-                  {date}
-                </Text>
-              </View>
+                  <Text
+                    style={{
+                      marginTop: 4,
+                      fontSize: 15,
+                      color: "#6B7280",
+                    }}
+                  >
+                    {date}
+                  </Text>
+                </View>
 
-              {daySchedules.map((schedule, index) => {
-                const endTime = calculateEndTime(
-                  schedule.time,
-                  schedule.durationMinutes
-                );
-
-                const nextSchedule =
-                  daySchedules[index + 1];
-
-                const gapMinutes =
-                  calculateGapMinutes(
+                {daySchedules.map(
+                  (
                     schedule,
-                    nextSchedule
-                  );
+                    index
+                  ) => {
+                    const endTime =
+                      calculateEndTime(
+                        schedule.time,
+                        schedule.durationMinutes
+                      );
 
-                return (
-                  <View key={schedule.id}>
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        marginBottom: 8,
-                      }}
-                    >
+                    const nextSchedule =
+                      daySchedules[
+                        index +
+                          1
+                      ];
+
+                    const gapMinutes =
+                      calculateGapMinutes(
+                        schedule,
+                        nextSchedule
+                      );
+
+                    return (
                       <View
-                        style={{
-                          width: 65,
-                          paddingTop: 4,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            fontSize: 16,
-                            fontWeight: "bold",
-                            color: "#2563EB",
-                          }}
-                        >
-                          {schedule.time}
-                        </Text>
-
-                        {endTime && (
-                          <Text
-                            style={{
-                              marginTop: 4,
-                              fontSize: 13,
-                              color: "#9CA3AF",
-                            }}
-                          >
-                            ~ {endTime}
-                          </Text>
-                        )}
-                      </View>
-
-                      <View
-                        style={{
-                          width: 2,
-                          backgroundColor: "#D1D5DB",
-                          marginRight: 14,
-                          position: "relative",
-                        }}
+                        key={
+                          schedule.id
+                        }
                       >
                         <View
                           style={{
-                            position: "absolute",
-                            top: 6,
-                            left: -5,
-                            width: 12,
-                            height: 12,
-                            borderRadius: 6,
-                            backgroundColor: "#3B82F6",
-                          }}
-                        />
-                      </View>
-
-                      <View
-                        style={{
-                          flex: 1,
-                          backgroundColor: "white",
-                          borderRadius: 16,
-                          padding: 16,
-                        }}
-                      >
-                        <View
-                          style={{
-                            flexDirection: "row",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            gap: 10,
+                            flexDirection:
+                              "row",
+                            marginBottom: 8,
                           }}
                         >
-                          <Text
-                            style={{
-                              flex: 1,
-                              fontSize: 19,
-                              fontWeight: "bold",
-                              color: "#111827",
-                            }}
-                          >
-                            {schedule.title}
-                          </Text>
-
-                          {schedule.category && (
-                            <View
-                              style={{
-                                backgroundColor: "#EFF6FF",
-                                paddingHorizontal: 10,
-                                paddingVertical: 6,
-                                borderRadius: 20,
-                              }}
-                            >
-                              <Text
-                                style={{
-                                  color: "#2563EB",
-                                  fontWeight: "bold",
-                                  fontSize: 13,
-                                }}
-                              >
-                                {schedule.category}
-                              </Text>
-                            </View>
-                          )}
-                        </View>
-
-                        <Text
-                          style={{
-                            marginTop: 8,
-                            fontSize: 15,
-                            color: "#6B7280",
-                          }}
-                        >
-                          📍 {schedule.location}
-                        </Text>
-
-                        {schedule.durationMinutes && (
-                          <Text
-                            style={{
-                              marginTop: 7,
-                              fontSize: 15,
-                              color: "#6B7280",
-                            }}
-                          >
-                            ⏱ 예상 소요시간{" "}
-                            {formatDuration(
-                              schedule.durationMinutes
-                            )}
-                          </Text>
-                        )}
-
-                        {endTime && (
-                          <Text
-                            style={{
-                              marginTop: 7,
-                              fontSize: 15,
-                              color: "#6B7280",
-                            }}
-                          >
-                            🏁 예상 종료 {endTime}
-                          </Text>
-                        )}
-
-                        {schedule.memo?.trim() ? (
                           <View
                             style={{
-                              marginTop: 12,
-                              backgroundColor: "#F9FAFB",
-                              borderRadius: 10,
-                              padding: 12,
+                              width: 65,
+                              paddingTop: 4,
                             }}
                           >
                             <Text
                               style={{
-                                fontSize: 14,
-                                color: "#4B5563",
-                                lineHeight: 20,
+                                fontSize: 16,
+                                fontWeight:
+                                  "bold",
+                                color:
+                                  "#2563EB",
                               }}
                             >
-                              📝 {schedule.memo}
+                              {
+                                schedule.time
+                              }
                             </Text>
-                          </View>
-                        ) : null}
 
-                        <View
-                          style={{
-                            flexDirection: "row",
-                            gap: 10,
-                            marginTop: 16,
-                          }}
-                        >
+                            {endTime && (
+                              <Text
+                                style={{
+                                  marginTop: 4,
+                                  fontSize: 13,
+                                  color:
+                                    "#9CA3AF",
+                                }}
+                              >
+                                ~{" "}
+                                {
+                                  endTime
+                                }
+                              </Text>
+                            )}
+                          </View>
+
+                          <View
+                            style={{
+                              width: 2,
+                              backgroundColor:
+                                "#D1D5DB",
+                              marginRight: 14,
+                              position:
+                                "relative",
+                            }}
+                          >
+                            <View
+                              style={{
+                                position:
+                                  "absolute",
+                                top: 6,
+                                left: -5,
+                                width: 12,
+                                height: 12,
+                                borderRadius: 6,
+                                backgroundColor:
+                                  "#3B82F6",
+                              }}
+                            />
+                          </View>
+
                           <Pressable
                             onPress={() =>
                               router.push(
@@ -469,85 +660,268 @@ export default function ScheduleScreen() {
                             }
                             style={{
                               flex: 1,
-                              backgroundColor: "#E8F1FF",
-                              paddingVertical: 11,
-                              borderRadius: 10,
-                              alignItems: "center",
+                              backgroundColor:
+                                "white",
+                              borderRadius: 16,
+                              padding: 16,
                             }}
                           >
-                            <Text
+                            <View
                               style={{
-                                fontWeight: "bold",
-                                color: "#2563EB",
+                                flexDirection:
+                                  "row",
+                                justifyContent:
+                                  "space-between",
+                                alignItems:
+                                  "center",
+                                gap: 10,
                               }}
                             >
-                              수정
-                            </Text>
-                          </Pressable>
+                              <Text
+                                style={{
+                                  flex: 1,
+                                  fontSize: 19,
+                                  fontWeight:
+                                    "bold",
+                                  color:
+                                    "#111827",
+                                }}
+                              >
+                                {
+                                  schedule.title
+                                }
+                              </Text>
 
-                          <Pressable
-                            onPress={() =>
-                              handleDelete(
-                                schedule.id,
-                                schedule.title
-                              )
-                            }
-                            style={{
-                              flex: 1,
-                              backgroundColor: "#FEECEC",
-                              paddingVertical: 11,
-                              borderRadius: 10,
-                              alignItems: "center",
-                            }}
-                          >
+                              {schedule.category && (
+                                <View
+                                  style={{
+                                    backgroundColor:
+                                      "#EFF6FF",
+                                    paddingHorizontal: 10,
+                                    paddingVertical: 6,
+                                    borderRadius: 20,
+                                  }}
+                                >
+                                  <Text
+                                    style={{
+                                      color:
+                                        "#2563EB",
+                                      fontWeight:
+                                        "bold",
+                                      fontSize: 13,
+                                    }}
+                                  >
+                                    {
+                                      schedule.category
+                                    }
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+
                             <Text
                               style={{
-                                fontWeight: "bold",
-                                color: "#DC2626",
+                                marginTop: 8,
+                                fontSize: 15,
+                                color: "#6B7280",
                               }}
                             >
-                              삭제
+                              📍{" "}
+                              {
+                                schedule.location
+                              }
                             </Text>
+
+                            {schedule.address ? (
+                              <Text
+                                style={{
+                                  marginTop: 5,
+                                  fontSize: 13,
+                                  color:
+                                    "#9CA3AF",
+                                  lineHeight: 18,
+                                }}
+                              >
+                                {
+                                  schedule.address
+                                }
+                              </Text>
+                            ) : null}
+
+                            {schedule.durationMinutes && (
+                              <Text
+                                style={{
+                                  marginTop: 7,
+                                  fontSize: 15,
+                                  color:
+                                    "#6B7280",
+                                }}
+                              >
+                                ⏱ 예상 소요시간{" "}
+                                {formatDuration(
+                                  schedule.durationMinutes
+                                )}
+                              </Text>
+                            )}
+
+                            {endTime && (
+                              <Text
+                                style={{
+                                  marginTop: 7,
+                                  fontSize: 15,
+                                  color:
+                                    "#6B7280",
+                                }}
+                              >
+                                🏁 예상 종료{" "}
+                                {
+                                  endTime
+                                }
+                              </Text>
+                            )}
+
+                            {schedule.memo?.trim() ? (
+                              <View
+                                style={{
+                                  marginTop: 12,
+                                  backgroundColor:
+                                    "#F9FAFB",
+                                  borderRadius: 10,
+                                  padding: 12,
+                                }}
+                              >
+                                <Text
+                                  style={{
+                                    fontSize: 14,
+                                    color:
+                                      "#4B5563",
+                                    lineHeight: 20,
+                                  }}
+                                >
+                                  📝{" "}
+                                  {
+                                    schedule.memo
+                                  }
+                                </Text>
+                              </View>
+                            ) : null}
+
+                            <View
+                              style={{
+                                flexDirection:
+                                  "row",
+                                gap: 10,
+                                marginTop: 16,
+                              }}
+                            >
+                              <View
+                                style={{
+                                  flex: 1,
+                                  backgroundColor:
+                                    "#E8F1FF",
+                                  paddingVertical: 11,
+                                  borderRadius: 10,
+                                  alignItems:
+                                    "center",
+                                }}
+                              >
+                                <Text
+                                  style={{
+                                    fontWeight:
+                                      "bold",
+                                    color:
+                                      "#2563EB",
+                                  }}
+                                >
+                                  수정
+                                </Text>
+                              </View>
+
+                              <Pressable
+                                onPress={(
+                                  event
+                                ) => {
+                                  event.stopPropagation();
+
+                                  handleDelete(
+                                    schedule.id,
+                                    schedule.title
+                                  );
+                                }}
+                                style={{
+                                  flex: 1,
+                                  backgroundColor:
+                                    "#FEECEC",
+                                  paddingVertical: 11,
+                                  borderRadius: 10,
+                                  alignItems:
+                                    "center",
+                                }}
+                              >
+                                <Text
+                                  style={{
+                                    fontWeight:
+                                      "bold",
+                                    color:
+                                      "#DC2626",
+                                  }}
+                                >
+                                  삭제
+                                </Text>
+                              </Pressable>
+                            </View>
                           </Pressable>
                         </View>
-                      </View>
-                    </View>
 
-                    {gapMinutes !== null && (
-                      <View
-                        style={{
-                          marginLeft: 79,
-                          marginBottom: 14,
-                          paddingVertical: 10,
-                          paddingHorizontal: 14,
-                          borderRadius: 12,
-                          backgroundColor:
-                            gapMinutes < 0
-                              ? "#FEF2F2"
-                              : "#F3F4F6",
-                        }}
-                      >
-                        <Text
-                          style={{
-                            fontSize: 14,
-                            fontWeight: "bold",
-                            color:
-                              gapMinutes < 0
-                                ? "#DC2626"
-                                : "#6B7280",
-                          }}
-                        >
-                          {gapMinutes < 0 ? "⚠️ " : "↳ "}
-                          다음 일정까지 {formatGap(gapMinutes)}
-                        </Text>
+                        {gapMinutes !==
+                          null && (
+                          <View
+                            style={{
+                              marginLeft: 79,
+                              marginBottom: 14,
+                              paddingVertical: 10,
+                              paddingHorizontal: 14,
+                              borderRadius: 12,
+
+                              backgroundColor:
+                                gapMinutes <
+                                0
+                                  ? "#FEF2F2"
+                                  : "#F3F4F6",
+                            }}
+                          >
+                            <Text
+                              style={{
+                                fontSize: 14,
+                                fontWeight:
+                                  "bold",
+
+                                color:
+                                  gapMinutes <
+                                  0
+                                    ? "#DC2626"
+                                    : "#6B7280",
+                              }}
+                            >
+                              {gapMinutes <
+                              0
+                                ? "⚠️ "
+                                : "↳ "}
+                              다음 일정까지{" "}
+                              {formatGap(
+                                gapMinutes
+                              )}
+                            </Text>
+                          </View>
+                        )}
                       </View>
-                    )}
-                  </View>
-                );
-              })}
-            </View>
-          );
-        })
+                    );
+                  }
+                )}
+              </View>
+            );
+          }
+        )
       )}
     </ScrollView>
   );

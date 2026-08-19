@@ -72,7 +72,10 @@ export async function updateSchedule(
       (schedule: any) =>
         schedule.id ===
         updatedSchedule.id
-          ? updatedSchedule
+          ? {
+              ...schedule,
+              ...updatedSchedule,
+            }
           : schedule
     );
 
