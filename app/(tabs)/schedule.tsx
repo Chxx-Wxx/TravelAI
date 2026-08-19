@@ -18,7 +18,6 @@ import { Schedule, Trip } from "../../types";
 
 function parseDate(dateString: string) {
   const [year, month, day] = dateString.split("-").map(Number);
-
   return new Date(year, month - 1, day);
 }
 
@@ -33,6 +32,76 @@ function calculateDayNumber(
     target.getTime() - start.getTime();
 
   return Math.floor(difference / (1000 * 60 * 60 * 24)) + 1;
+}
+
+function formatDuration(minutes?: number) {
+  if (!minutes) return null;
+
+  if (minutes < 60) {
+    return `${minutes}분`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+
+  if (remainingMinutes === 0) {
+    return `${hours}시간`;
+  }
+
+  return `${hours}시간 ${remainingMinutes}분`;
+}
+
+function timeToMinutes(time: string) {
+  const [hour, minute] = time.split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+function calculateEndTime(
+  startTime: string,
+  durationMinutes?: number
+) {
+  if (!durationMinutes) return null;
+
+  const start = timeToMinutes(startTime);
+  const end = start + durationMinutes;
+
+  const endHour = Math.floor(end / 60) % 24;
+  const endMinute = end % 60;
+
+  return `${String(endHour).padStart(2, "0")}:${String(
+    endMinute
+  ).padStart(2, "0")}`;
+}
+
+function calculateGapMinutes(
+  current: Schedule,
+  next?: Schedule
+) {
+  if (!next || !current.durationMinutes) return null;
+
+  const currentStart = timeToMinutes(current.time);
+  const currentEnd =
+    currentStart + current.durationMinutes;
+
+  let nextStart = timeToMinutes(next.time);
+
+  if (nextStart < currentStart) {
+    nextStart += 24 * 60;
+  }
+
+  return nextStart - currentEnd;
+}
+
+function formatGap(minutes: number) {
+  if (minutes === 0) {
+    return "바로 다음 일정";
+  }
+
+  if (minutes < 0) {
+    return `${formatDuration(Math.abs(minutes))} 겹침`;
+  }
+
+  return `${formatDuration(minutes)} 여유`;
 }
 
 export default function ScheduleScreen() {
@@ -205,139 +274,277 @@ export default function ScheduleScreen() {
                 </Text>
               </View>
 
-              {daySchedules.map((schedule) => (
-                <View
-                  key={schedule.id}
-                  style={{
-                    flexDirection: "row",
-                    marginBottom: 14,
-                  }}
-                >
-                  <View
-                    style={{
-                      width: 65,
-                      paddingTop: 4,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        fontSize: 16,
-                        fontWeight: "bold",
-                        color: "#2563EB",
-                      }}
-                    >
-                      {schedule.time}
-                    </Text>
-                  </View>
+              {daySchedules.map((schedule, index) => {
+                const endTime = calculateEndTime(
+                  schedule.time,
+                  schedule.durationMinutes
+                );
 
-                  <View
-                    style={{
-                      width: 2,
-                      backgroundColor: "#D1D5DB",
-                      marginRight: 14,
-                      position: "relative",
-                    }}
-                  >
-                    <View
-                      style={{
-                        position: "absolute",
-                        top: 6,
-                        left: -5,
-                        width: 12,
-                        height: 12,
-                        borderRadius: 6,
-                        backgroundColor: "#3B82F6",
-                      }}
-                    />
-                  </View>
+                const nextSchedule =
+                  daySchedules[index + 1];
 
-                  <View
-                    style={{
-                      flex: 1,
-                      backgroundColor: "white",
-                      borderRadius: 16,
-                      padding: 16,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        fontSize: 19,
-                        fontWeight: "bold",
-                        color: "#111827",
-                      }}
-                    >
-                      {schedule.title}
-                    </Text>
+                const gapMinutes =
+                  calculateGapMinutes(
+                    schedule,
+                    nextSchedule
+                  );
 
-                    <Text
-                      style={{
-                        marginTop: 8,
-                        fontSize: 15,
-                        color: "#6B7280",
-                      }}
-                    >
-                      📍 {schedule.location}
-                    </Text>
-
+                return (
+                  <View key={schedule.id}>
                     <View
                       style={{
                         flexDirection: "row",
-                        gap: 10,
-                        marginTop: 16,
+                        marginBottom: 8,
                       }}
                     >
-                      <Pressable
-                        onPress={() =>
-                          router.push(
-                            `/schedule/${schedule.id}` as any
-                          )
-                        }
+                      <View
                         style={{
-                          flex: 1,
-                          backgroundColor: "#E8F1FF",
-                          paddingVertical: 11,
-                          borderRadius: 10,
-                          alignItems: "center",
+                          width: 65,
+                          paddingTop: 4,
                         }}
                       >
                         <Text
                           style={{
+                            fontSize: 16,
                             fontWeight: "bold",
                             color: "#2563EB",
                           }}
                         >
-                          수정
+                          {schedule.time}
                         </Text>
-                      </Pressable>
 
-                      <Pressable
-                        onPress={() =>
-                          handleDelete(
-                            schedule.id,
-                            schedule.title
-                          )
-                        }
+                        {endTime && (
+                          <Text
+                            style={{
+                              marginTop: 4,
+                              fontSize: 13,
+                              color: "#9CA3AF",
+                            }}
+                          >
+                            ~ {endTime}
+                          </Text>
+                        )}
+                      </View>
+
+                      <View
+                        style={{
+                          width: 2,
+                          backgroundColor: "#D1D5DB",
+                          marginRight: 14,
+                          position: "relative",
+                        }}
+                      >
+                        <View
+                          style={{
+                            position: "absolute",
+                            top: 6,
+                            left: -5,
+                            width: 12,
+                            height: 12,
+                            borderRadius: 6,
+                            backgroundColor: "#3B82F6",
+                          }}
+                        />
+                      </View>
+
+                      <View
                         style={{
                           flex: 1,
-                          backgroundColor: "#FEECEC",
-                          paddingVertical: 11,
-                          borderRadius: 10,
-                          alignItems: "center",
+                          backgroundColor: "white",
+                          borderRadius: 16,
+                          padding: 16,
+                        }}
+                      >
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 10,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              flex: 1,
+                              fontSize: 19,
+                              fontWeight: "bold",
+                              color: "#111827",
+                            }}
+                          >
+                            {schedule.title}
+                          </Text>
+
+                          {schedule.category && (
+                            <View
+                              style={{
+                                backgroundColor: "#EFF6FF",
+                                paddingHorizontal: 10,
+                                paddingVertical: 6,
+                                borderRadius: 20,
+                              }}
+                            >
+                              <Text
+                                style={{
+                                  color: "#2563EB",
+                                  fontWeight: "bold",
+                                  fontSize: 13,
+                                }}
+                              >
+                                {schedule.category}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+
+                        <Text
+                          style={{
+                            marginTop: 8,
+                            fontSize: 15,
+                            color: "#6B7280",
+                          }}
+                        >
+                          📍 {schedule.location}
+                        </Text>
+
+                        {schedule.durationMinutes && (
+                          <Text
+                            style={{
+                              marginTop: 7,
+                              fontSize: 15,
+                              color: "#6B7280",
+                            }}
+                          >
+                            ⏱ 예상 소요시간{" "}
+                            {formatDuration(
+                              schedule.durationMinutes
+                            )}
+                          </Text>
+                        )}
+
+                        {endTime && (
+                          <Text
+                            style={{
+                              marginTop: 7,
+                              fontSize: 15,
+                              color: "#6B7280",
+                            }}
+                          >
+                            🏁 예상 종료 {endTime}
+                          </Text>
+                        )}
+
+                        {schedule.memo?.trim() ? (
+                          <View
+                            style={{
+                              marginTop: 12,
+                              backgroundColor: "#F9FAFB",
+                              borderRadius: 10,
+                              padding: 12,
+                            }}
+                          >
+                            <Text
+                              style={{
+                                fontSize: 14,
+                                color: "#4B5563",
+                                lineHeight: 20,
+                              }}
+                            >
+                              📝 {schedule.memo}
+                            </Text>
+                          </View>
+                        ) : null}
+
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            gap: 10,
+                            marginTop: 16,
+                          }}
+                        >
+                          <Pressable
+                            onPress={() =>
+                              router.push(
+                                `/schedule/${schedule.id}` as any
+                              )
+                            }
+                            style={{
+                              flex: 1,
+                              backgroundColor: "#E8F1FF",
+                              paddingVertical: 11,
+                              borderRadius: 10,
+                              alignItems: "center",
+                            }}
+                          >
+                            <Text
+                              style={{
+                                fontWeight: "bold",
+                                color: "#2563EB",
+                              }}
+                            >
+                              수정
+                            </Text>
+                          </Pressable>
+
+                          <Pressable
+                            onPress={() =>
+                              handleDelete(
+                                schedule.id,
+                                schedule.title
+                              )
+                            }
+                            style={{
+                              flex: 1,
+                              backgroundColor: "#FEECEC",
+                              paddingVertical: 11,
+                              borderRadius: 10,
+                              alignItems: "center",
+                            }}
+                          >
+                            <Text
+                              style={{
+                                fontWeight: "bold",
+                                color: "#DC2626",
+                              }}
+                            >
+                              삭제
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    </View>
+
+                    {gapMinutes !== null && (
+                      <View
+                        style={{
+                          marginLeft: 79,
+                          marginBottom: 14,
+                          paddingVertical: 10,
+                          paddingHorizontal: 14,
+                          borderRadius: 12,
+                          backgroundColor:
+                            gapMinutes < 0
+                              ? "#FEF2F2"
+                              : "#F3F4F6",
                         }}
                       >
                         <Text
                           style={{
+                            fontSize: 14,
                             fontWeight: "bold",
-                            color: "#DC2626",
+                            color:
+                              gapMinutes < 0
+                                ? "#DC2626"
+                                : "#6B7280",
                           }}
                         >
-                          삭제
+                          {gapMinutes < 0 ? "⚠️ " : "↳ "}
+                          다음 일정까지 {formatGap(gapMinutes)}
                         </Text>
-                      </Pressable>
-                    </View>
+                      </View>
+                    )}
                   </View>
-                </View>
-              ))}
+                );
+              })}
             </View>
           );
         })
