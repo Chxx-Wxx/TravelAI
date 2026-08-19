@@ -23,8 +23,19 @@ export default function MapScreen() {
 
   // 저장된 여행 / 일정 불러오기
   const loadData = useCallback(async () => {
-    const tripData = await getTrip();
-    const scheduleData = await fetchSchedules();
+  const tripData =
+  await getTrip();
+
+if (!tripData?.id) {
+  setTrip(tripData);
+  setSchedules([]);
+  return;
+}
+
+  const scheduleData =
+  await fetchSchedules(
+    tripData.id
+  );
 
     const sorted = [...scheduleData].sort((a, b) =>
       `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)

@@ -564,6 +564,7 @@ export default function EditScheduleScreen() {
       await updateServerSchedule(
         id,
         {
+          tripId: trip.id,
           title:
             title.trim(),
 
@@ -598,6 +599,14 @@ export default function EditScheduleScreen() {
             memo.trim(),
         }
       );
+      if (!trip.id) {
+  Alert.alert(
+    "여행 정보 오류",
+    "여행 ID가 없습니다."
+  );
+
+  return;
+}
 
       Alert.alert(
         "완료",

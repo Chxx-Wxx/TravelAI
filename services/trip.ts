@@ -1,25 +1,18 @@
 const API_URL =
   process.env.EXPO_PUBLIC_API_URL;
 
-export type ServerScheduleInput = {
-  tripId: string;
+export type CreateTripInput = {
+  tripName: string;
+  country: string;
+  city: string;
+  startDate: string;
+  endDate: string;
+  people: string;
 
-  title: string;
-  location: string;
-
-  address?: string;
-
-  latitude?: number;
-  longitude?: number;
-  placeId?: string;
-
-  category?: string;
-  durationMinutes?: number;
-
-  date: string;
-  time: string;
-
-  memo?: string;
+  members?: {
+    id: string;
+    name: string;
+  }[];
 };
 
 function requireApiUrl() {
@@ -32,15 +25,15 @@ function requireApiUrl() {
   return API_URL;
 }
 
-// 일정 생성
-export async function createSchedule(
-  schedule: ServerScheduleInput
+// 여행 생성
+export async function createTrip(
+  trip: CreateTripInput
 ) {
   const apiUrl =
     requireApiUrl();
 
   const response = await fetch(
-    `${apiUrl}/schedules`,
+    `${apiUrl}/trips`,
     {
       method: "POST",
 
@@ -50,7 +43,7 @@ export async function createSchedule(
       },
 
       body: JSON.stringify(
-        schedule
+        trip
       ),
     }
   );
@@ -61,25 +54,22 @@ export async function createSchedule(
   if (!response.ok) {
     throw new Error(
       data.message ??
-        "일정 저장에 실패했습니다."
+        "여행 저장에 실패했습니다."
     );
   }
 
-  return data.schedule;
+  return data.trip;
 }
 
-// 특정 여행의 일정 전체 조회
-export async function fetchSchedules(
-  tripId: string
-) {
+// 여행 전체 조회
+export async function fetchTrips() {
   const apiUrl =
     requireApiUrl();
 
-  const response = await fetch(
-    `${apiUrl}/schedules?tripId=${encodeURIComponent(
-      tripId
-    )}`
-  );
+  const response =
+    await fetch(
+      `${apiUrl}/trips`
+    );
 
   const data =
     await response.json();
@@ -87,23 +77,24 @@ export async function fetchSchedules(
   if (!response.ok) {
     throw new Error(
       data.message ??
-        "일정 조회에 실패했습니다."
+        "여행 조회에 실패했습니다."
     );
   }
 
-  return data.schedules ?? [];
+  return data.trips ?? [];
 }
 
-// 일정 하나 조회
-export async function fetchSchedule(
+// 여행 하나 조회
+export async function fetchTrip(
   id: string
 ) {
   const apiUrl =
     requireApiUrl();
 
-  const response = await fetch(
-    `${apiUrl}/schedules/${id}`
-  );
+  const response =
+    await fetch(
+      `${apiUrl}/trips/${id}`
+    );
 
   const data =
     await response.json();
@@ -111,23 +102,23 @@ export async function fetchSchedule(
   if (!response.ok) {
     throw new Error(
       data.message ??
-        "일정을 찾을 수 없습니다."
+        "여행을 찾을 수 없습니다."
     );
   }
 
-  return data.schedule;
+  return data.trip;
 }
 
-// 일정 수정
-export async function updateServerSchedule(
+// 여행 수정
+export async function updateServerTrip(
   id: string,
-  schedule: ServerScheduleInput
+  trip: CreateTripInput
 ) {
   const apiUrl =
     requireApiUrl();
 
   const response = await fetch(
-    `${apiUrl}/schedules/${id}`,
+    `${apiUrl}/trips/${id}`,
     {
       method: "PUT",
 
@@ -137,7 +128,7 @@ export async function updateServerSchedule(
       },
 
       body: JSON.stringify(
-        schedule
+        trip
       ),
     }
   );
@@ -148,22 +139,22 @@ export async function updateServerSchedule(
   if (!response.ok) {
     throw new Error(
       data.message ??
-        "일정 수정에 실패했습니다."
+        "여행 수정에 실패했습니다."
     );
   }
 
-  return data.schedule;
+  return data.trip;
 }
 
-// 일정 삭제
-export async function deleteServerSchedule(
+// 여행 삭제
+export async function deleteServerTrip(
   id: string
 ) {
   const apiUrl =
     requireApiUrl();
 
   const response = await fetch(
-    `${apiUrl}/schedules/${id}`,
+    `${apiUrl}/trips/${id}`,
     {
       method: "DELETE",
     }
@@ -175,7 +166,7 @@ export async function deleteServerSchedule(
   if (!response.ok) {
     throw new Error(
       data.message ??
-        "일정 삭제에 실패했습니다."
+        "여행 삭제에 실패했습니다."
     );
   }
 

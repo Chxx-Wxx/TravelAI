@@ -4,6 +4,7 @@ export interface TripMember {
 }
 
 export interface Trip {
+  id?: string;
   tripName: string;
   country: string;
   city: string;
@@ -29,6 +30,7 @@ export interface Schedule {
   address?: string;
   date: string;
   time: string;
+  tripId?: string;
 
   category?: ScheduleCategory;
   durationMinutes?: number;

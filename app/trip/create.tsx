@@ -1,4 +1,5 @@
 import { useState } from "react";
+
 import {
   Alert,
   Platform,
@@ -18,43 +19,108 @@ import { router } from "expo-router";
 import AppButton from "../../components/AppButton";
 import AppInput from "../../components/AppInput";
 
-import { saveTrip } from "../../lib/storage";
-import { Trip, TripMember } from "../../types";
+import {
+  saveTrip,
+} from "../../lib/storage";
+
+import {
+  createTrip,
+} from "../../services/trip";
+
+import {
+  Trip,
+  TripMember,
+} from "../../types";
 
 export default function CreateTripScreen() {
-  const [tripName, setTripName] = useState("");
-  const [country, setCountry] = useState("");
-  const [city, setCity] = useState("");
+  const [
+    tripName,
+    setTripName,
+  ] = useState("");
 
-  const [startDate, setStartDate] = useState(new Date());
+  const [
+    country,
+    setCountry,
+  ] = useState("");
 
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const [
+    city,
+    setCity,
+  ] = useState("");
 
-  const [endDate, setEndDate] = useState(tomorrow);
+  const [
+    startDate,
+    setStartDate,
+  ] =
+    useState(
+      new Date()
+    );
 
-  const [showStartPicker, setShowStartPicker] =
+  const tomorrow =
+    new Date();
+
+  tomorrow.setDate(
+    tomorrow.getDate() + 1
+  );
+
+  const [
+    endDate,
+    setEndDate,
+  ] =
+    useState(
+      tomorrow
+    );
+
+  const [
+    showStartPicker,
+    setShowStartPicker,
+  ] =
     useState(false);
 
-  const [showEndPicker, setShowEndPicker] =
+  const [
+    showEndPicker,
+    setShowEndPicker,
+  ] =
     useState(false);
 
-  const [peopleCount, setPeopleCount] =
+  const [
+    peopleCount,
+    setPeopleCount,
+  ] =
     useState(2);
 
-  const [memberNames, setMemberNames] =
-    useState<string[]>(["나", "친구 1"]);
+  const [
+    memberNames,
+    setMemberNames,
+  ] =
+    useState<string[]>(
+      [
+        "나",
+        "친구 1",
+      ]
+    );
 
-  function formatDate(value: Date) {
-    const year = value.getFullYear();
+  function formatDate(
+    value: Date
+  ) {
+    const year =
+      value.getFullYear();
 
-    const month = String(
-      value.getMonth() + 1
-    ).padStart(2, "0");
+    const month =
+      String(
+        value.getMonth() + 1
+      ).padStart(
+        2,
+        "0"
+      );
 
-    const day = String(
-      value.getDate()
-    ).padStart(2, "0");
+    const day =
+      String(
+        value.getDate()
+      ).padStart(
+        2,
+        "0"
+      );
 
     return `${year}-${month}-${day}`;
   }
@@ -62,11 +128,15 @@ export default function CreateTripScreen() {
   function updatePeopleCount(
     nextCount: number
   ) {
-    if (nextCount < 1) {
+    if (
+      nextCount < 1
+    ) {
       return;
     }
 
-    if (nextCount > 10) {
+    if (
+      nextCount > 10
+    ) {
       Alert.alert(
         "인원 확인",
         "현재는 최대 10명까지 등록할 수 있습니다."
@@ -75,74 +145,125 @@ export default function CreateTripScreen() {
       return;
     }
 
-    setPeopleCount(nextCount);
+    setPeopleCount(
+      nextCount
+    );
 
-    setMemberNames((current) => {
-      if (nextCount > current.length) {
-        const newNames = [...current];
-
-        for (
-          let i = current.length;
-          i < nextCount;
-          i++
+    setMemberNames(
+      (current) => {
+        if (
+          nextCount >
+          current.length
         ) {
-          newNames.push(`친구 ${i}`);
+          const newNames =
+            [
+              ...current,
+            ];
+
+          for (
+            let i =
+              current.length;
+            i <
+            nextCount;
+            i++
+          ) {
+            newNames.push(
+              `친구 ${i}`
+            );
+          }
+
+          return newNames;
         }
 
-        return newNames;
+        return current.slice(
+          0,
+          nextCount
+        );
       }
-
-      return current.slice(0, nextCount);
-    });
+    );
   }
 
   function updateMemberName(
     index: number,
     name: string
   ) {
-    setMemberNames((current) => {
-      const updated = [...current];
-      updated[index] = name;
+    setMemberNames(
+      (current) => {
+        const updated =
+          [
+            ...current,
+          ];
 
-      return updated;
-    });
+        updated[index] =
+          name;
+
+        return updated;
+      }
+    );
   }
 
   function handleStartDateChange(
-    event: DateTimePickerEvent,
+    event:
+      DateTimePickerEvent,
     selectedDate?: Date
   ) {
-    if (Platform.OS === "android") {
-      setShowStartPicker(false);
+    if (
+      Platform.OS ===
+      "android"
+    ) {
+      setShowStartPicker(
+        false
+      );
     }
 
-    if (event.type === "dismissed") {
+    if (
+      event.type ===
+      "dismissed"
+    ) {
       return;
     }
 
     if (selectedDate) {
-      setStartDate(selectedDate);
+      setStartDate(
+        selectedDate
+      );
 
-      if (selectedDate > endDate) {
-        setEndDate(selectedDate);
+      if (
+        selectedDate >
+        endDate
+      ) {
+        setEndDate(
+          selectedDate
+        );
       }
     }
   }
 
   function handleEndDateChange(
-    event: DateTimePickerEvent,
+    event:
+      DateTimePickerEvent,
     selectedDate?: Date
   ) {
-    if (Platform.OS === "android") {
-      setShowEndPicker(false);
+    if (
+      Platform.OS ===
+      "android"
+    ) {
+      setShowEndPicker(
+        false
+      );
     }
 
-    if (event.type === "dismissed") {
+    if (
+      event.type ===
+      "dismissed"
+    ) {
       return;
     }
 
     if (selectedDate) {
-      setEndDate(selectedDate);
+      setEndDate(
+        selectedDate
+      );
     }
   }
 
@@ -160,7 +281,10 @@ export default function CreateTripScreen() {
       return;
     }
 
-    if (endDate < startDate) {
+    if (
+      endDate <
+      startDate
+    ) {
       Alert.alert(
         "날짜 확인",
         "종료일은 시작일보다 빠를 수 없습니다."
@@ -171,10 +295,13 @@ export default function CreateTripScreen() {
 
     const hasEmptyMember =
       memberNames.some(
-        (name) => !name.trim()
+        (name) =>
+          !name.trim()
       );
 
-    if (hasEmptyMember) {
+    if (
+      hasEmptyMember
+    ) {
       Alert.alert(
         "동행자 확인",
         "모든 동행자의 이름을 입력해주세요."
@@ -185,10 +312,12 @@ export default function CreateTripScreen() {
 
     const duplicated =
       new Set(
-        memberNames.map((name) =>
-          name.trim()
+        memberNames.map(
+          (name) =>
+            name.trim()
         )
-      ).size !== memberNames.length;
+      ).size !==
+      memberNames.length;
 
     if (duplicated) {
       Alert.alert(
@@ -199,26 +328,40 @@ export default function CreateTripScreen() {
       return;
     }
 
-    const members: TripMember[] =
-      memberNames.map(
-        (name, index) => ({
-          id: `member-${Date.now()}-${index}`,
-          name: name.trim(),
-        })
-      );
+    const members:
+      TripMember[] =
+        memberNames.map(
+          (
+            name,
+            index
+          ) => ({
+            id:
+              `member-${Date.now()}-${index}`,
+
+            name:
+              name.trim(),
+          })
+        );
 
     const trip: Trip = {
-      tripName: tripName.trim(),
+      tripName:
+        tripName.trim(),
 
-      country: country.trim(),
+      country:
+        country.trim(),
 
-      city: city.trim(),
+      city:
+        city.trim(),
 
       startDate:
-        formatDate(startDate),
+        formatDate(
+          startDate
+        ),
 
       endDate:
-        formatDate(endDate),
+        formatDate(
+          endDate
+        ),
 
       people:
         peopleCount.toString(),
@@ -226,26 +369,54 @@ export default function CreateTripScreen() {
       members,
     };
 
-    await saveTrip(trip);
+    try {
+      // 1. Express 서버에 여행 저장
+      const savedTrip =
+        await createTrip(
+          trip
+        );
 
-    Alert.alert(
-      "완료",
-      "여행이 저장되었습니다.",
-      [
-        {
-          text: "확인",
-          onPress: () =>
-            router.replace("/"),
-        },
-      ]
-    );
+      // 2. 서버에서 생성된 id까지 포함해서
+      // 기존 화면들이 쓰는 AsyncStorage에도 저장
+      await saveTrip(
+        savedTrip
+      );
+
+      Alert.alert(
+        "완료",
+        "여행이 저장되었습니다.",
+        [
+          {
+            text:
+              "확인",
+
+            onPress:
+              () =>
+                router.replace(
+                  "/"
+                ),
+          },
+        ]
+      );
+    } catch (error) {
+      console.error(
+        "여행 저장 실패:",
+        error
+      );
+
+      Alert.alert(
+        "여행 저장 실패",
+        "서버에 여행을 저장하지 못했습니다. 백엔드와 ngrok 연결을 확인해주세요."
+      );
+    }
   }
 
   return (
     <ScrollView
       style={{
         flex: 1,
-        backgroundColor: "#F5F7FB",
+        backgroundColor:
+          "#F5F7FB",
       }}
       contentContainerStyle={{
         paddingHorizontal: 20,
@@ -256,8 +427,10 @@ export default function CreateTripScreen() {
       <Text
         style={{
           fontSize: 32,
-          fontWeight: "bold",
-          color: "#111827",
+          fontWeight:
+            "bold",
+          color:
+            "#111827",
           marginBottom: 30,
         }}
       >
@@ -267,19 +440,25 @@ export default function CreateTripScreen() {
       <AppInput
         placeholder="여행 이름 (예: 도쿄 여행)"
         value={tripName}
-        onChangeText={setTripName}
+        onChangeText={
+          setTripName
+        }
       />
 
       <AppInput
         placeholder="국가 (예: 일본)"
         value={country}
-        onChangeText={setCountry}
+        onChangeText={
+          setCountry
+        }
       />
 
       <AppInput
         placeholder="도시 (예: 도쿄)"
         value={city}
-        onChangeText={setCity}
+        onChangeText={
+          setCity
+        }
       />
 
       <Text
@@ -287,8 +466,10 @@ export default function CreateTripScreen() {
           marginTop: 8,
           marginBottom: 8,
           fontSize: 16,
-          fontWeight: "bold",
-          color: "#374151",
+          fontWeight:
+            "bold",
+          color:
+            "#374151",
         }}
       >
         여행 시작일
@@ -296,10 +477,13 @@ export default function CreateTripScreen() {
 
       <Pressable
         onPress={() =>
-          setShowStartPicker(true)
+          setShowStartPicker(
+            true
+          )
         }
         style={{
-          backgroundColor: "white",
+          backgroundColor:
+            "white",
           borderRadius: 12,
           padding: 15,
           marginBottom: 12,
@@ -307,20 +491,27 @@ export default function CreateTripScreen() {
       >
         <Text
           style={{
-            color: "#111827",
+            color:
+              "#111827",
             fontSize: 16,
           }}
         >
-          📅 {formatDate(startDate)}
+          📅{" "}
+          {formatDate(
+            startDate
+          )}
         </Text>
       </Pressable>
 
       {showStartPicker && (
         <DateTimePicker
-          value={startDate}
+          value={
+            startDate
+          }
           mode="date"
           display={
-            Platform.OS === "ios"
+            Platform.OS ===
+            "ios"
               ? "spinner"
               : "default"
           }
@@ -332,21 +523,27 @@ export default function CreateTripScreen() {
         />
       )}
 
-      {Platform.OS === "ios" &&
+      {Platform.OS ===
+        "ios" &&
         showStartPicker && (
           <Pressable
             onPress={() =>
-              setShowStartPicker(false)
+              setShowStartPicker(
+                false
+              )
             }
             style={{
-              alignSelf: "flex-end",
+              alignSelf:
+                "flex-end",
               marginBottom: 15,
             }}
           >
             <Text
               style={{
-                color: "#2563EB",
-                fontWeight: "bold",
+                color:
+                  "#2563EB",
+                fontWeight:
+                  "bold",
               }}
             >
               시작일 선택 완료
@@ -359,8 +556,10 @@ export default function CreateTripScreen() {
           marginTop: 8,
           marginBottom: 8,
           fontSize: 16,
-          fontWeight: "bold",
-          color: "#374151",
+          fontWeight:
+            "bold",
+          color:
+            "#374151",
         }}
       >
         여행 종료일
@@ -368,10 +567,13 @@ export default function CreateTripScreen() {
 
       <Pressable
         onPress={() =>
-          setShowEndPicker(true)
+          setShowEndPicker(
+            true
+          )
         }
         style={{
-          backgroundColor: "white",
+          backgroundColor:
+            "white",
           borderRadius: 12,
           padding: 15,
           marginBottom: 12,
@@ -379,21 +581,30 @@ export default function CreateTripScreen() {
       >
         <Text
           style={{
-            color: "#111827",
+            color:
+              "#111827",
             fontSize: 16,
           }}
         >
-          📅 {formatDate(endDate)}
+          📅{" "}
+          {formatDate(
+            endDate
+          )}
         </Text>
       </Pressable>
 
       {showEndPicker && (
         <DateTimePicker
-          value={endDate}
+          value={
+            endDate
+          }
           mode="date"
-          minimumDate={startDate}
+          minimumDate={
+            startDate
+          }
           display={
-            Platform.OS === "ios"
+            Platform.OS ===
+            "ios"
               ? "spinner"
               : "default"
           }
@@ -405,21 +616,27 @@ export default function CreateTripScreen() {
         />
       )}
 
-      {Platform.OS === "ios" &&
+      {Platform.OS ===
+        "ios" &&
         showEndPicker && (
           <Pressable
             onPress={() =>
-              setShowEndPicker(false)
+              setShowEndPicker(
+                false
+              )
             }
             style={{
-              alignSelf: "flex-end",
+              alignSelf:
+                "flex-end",
               marginBottom: 15,
             }}
           >
             <Text
               style={{
-                color: "#2563EB",
-                fontWeight: "bold",
+                color:
+                  "#2563EB",
+                fontWeight:
+                  "bold",
               }}
             >
               종료일 선택 완료
@@ -430,7 +647,8 @@ export default function CreateTripScreen() {
       <View
         style={{
           marginTop: 18,
-          backgroundColor: "white",
+          backgroundColor:
+            "white",
           borderRadius: 16,
           padding: 18,
         }}
@@ -438,8 +656,10 @@ export default function CreateTripScreen() {
         <Text
           style={{
             fontSize: 18,
-            fontWeight: "bold",
-            color: "#111827",
+            fontWeight:
+              "bold",
+            color:
+              "#111827",
           }}
         >
           여행 인원
@@ -447,31 +667,39 @@ export default function CreateTripScreen() {
 
         <View
           style={{
-            flexDirection: "row",
-            alignItems: "center",
+            flexDirection:
+              "row",
+            alignItems:
+              "center",
             marginTop: 16,
           }}
         >
           <Pressable
             onPress={() =>
               updatePeopleCount(
-                peopleCount - 1
+                peopleCount -
+                  1
               )
             }
             style={{
               width: 44,
               height: 44,
               borderRadius: 22,
-              backgroundColor: "#F3F4F6",
-              justifyContent: "center",
-              alignItems: "center",
+              backgroundColor:
+                "#F3F4F6",
+              justifyContent:
+                "center",
+              alignItems:
+                "center",
             }}
           >
             <Text
               style={{
                 fontSize: 24,
-                fontWeight: "bold",
-                color: "#374151",
+                fontWeight:
+                  "bold",
+                color:
+                  "#374151",
               }}
             >
               −
@@ -482,8 +710,10 @@ export default function CreateTripScreen() {
             style={{
               marginHorizontal: 22,
               fontSize: 22,
-              fontWeight: "bold",
-              color: "#111827",
+              fontWeight:
+                "bold",
+              color:
+                "#111827",
             }}
           >
             {peopleCount}명
@@ -492,23 +722,29 @@ export default function CreateTripScreen() {
           <Pressable
             onPress={() =>
               updatePeopleCount(
-                peopleCount + 1
+                peopleCount +
+                  1
               )
             }
             style={{
               width: 44,
               height: 44,
               borderRadius: 22,
-              backgroundColor: "#3B82F6",
-              justifyContent: "center",
-              alignItems: "center",
+              backgroundColor:
+                "#3B82F6",
+              justifyContent:
+                "center",
+              alignItems:
+                "center",
             }}
           >
             <Text
               style={{
                 fontSize: 24,
-                fontWeight: "bold",
-                color: "white",
+                fontWeight:
+                  "bold",
+                color:
+                  "white",
               }}
             >
               +
@@ -520,7 +756,8 @@ export default function CreateTripScreen() {
       <View
         style={{
           marginTop: 18,
-          backgroundColor: "white",
+          backgroundColor:
+            "white",
           borderRadius: 16,
           padding: 18,
         }}
@@ -528,8 +765,10 @@ export default function CreateTripScreen() {
         <Text
           style={{
             fontSize: 18,
-            fontWeight: "bold",
-            color: "#111827",
+            fontWeight:
+              "bold",
+            color:
+              "#111827",
           }}
         >
           동행자
@@ -539,7 +778,8 @@ export default function CreateTripScreen() {
           style={{
             marginTop: 5,
             marginBottom: 14,
-            color: "#6B7280",
+            color:
+              "#6B7280",
             fontSize: 13,
           }}
         >
@@ -547,9 +787,14 @@ export default function CreateTripScreen() {
         </Text>
 
         {memberNames.map(
-          (name, index) => (
+          (
+            name,
+            index
+          ) => (
             <View
-              key={index}
+              key={
+                index
+              }
               style={{
                 marginBottom: 12,
               }}
@@ -557,26 +802,34 @@ export default function CreateTripScreen() {
               <Text
                 style={{
                   marginBottom: 6,
-                  color: "#6B7280",
+                  color:
+                    "#6B7280",
                   fontSize: 13,
-                  fontWeight: "bold",
+                  fontWeight:
+                    "bold",
                 }}
               >
-                {index === 0
+                {index ===
+                0
                   ? "나"
                   : `동행자 ${index}`}
               </Text>
 
               <TextInput
-                value={name}
-                onChangeText={(text) =>
+                value={
+                  name
+                }
+                onChangeText={(
+                  text
+                ) =>
                   updateMemberName(
                     index,
                     text
                   )
                 }
                 placeholder={
-                  index === 0
+                  index ===
+                  0
                     ? "내 이름"
                     : `동행자 ${index} 이름`
                 }
@@ -584,7 +837,8 @@ export default function CreateTripScreen() {
                 style={{
                   backgroundColor:
                     "#F9FAFB",
-                  color: "#111827",
+                  color:
+                    "#111827",
                   borderRadius: 12,
                   padding: 14,
                   fontSize: 16,
@@ -602,7 +856,9 @@ export default function CreateTripScreen() {
       >
         <AppButton
           title="여행 저장"
-          onPress={handleSave}
+          onPress={
+            handleSave
+          }
         />
       </View>
     </ScrollView>

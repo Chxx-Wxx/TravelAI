@@ -245,69 +245,75 @@ export default function ScheduleScreen() {
     useState(false);
 
   const loadData =
-    useCallback(
-      async () => {
-        try {
-          setLoading(
-            true
-          );
+  useCallback(
+    async () => {
+      try {
+        setLoading(true);
 
-          const [
-            scheduleData,
-            tripData,
-          ] =
-            await Promise.all([
-              fetchSchedules(),
-              getTrip(),
-            ]);
+        // 먼저 현재 여행 정보를 가져온다.
+        const tripData =
+          await getTrip();
 
-          const sorted =
-            [
-              ...scheduleData,
-            ].sort(
-              (
-                a,
-                b
-              ) => {
-                const first =
-                  `${a.date} ${a.time}`;
+        setTrip(tripData);
 
-                const second =
-                  `${b.date} ${b.time}`;
-
-                return first.localeCompare(
-                  second
-                );
-              }
-            );
-
-          setSchedules(
-            sorted
-          );
-
-          setTrip(
-            tripData
-          );
-        } catch (error) {
-          console.error(
-            "일정 불러오기 실패:",
-            error
-          );
-
-          Alert.alert(
-            "일정 불러오기 실패",
-            "서버에서 일정을 불러오지 못했습니다. 백엔드와 ngrok 연결을 확인해주세요."
-          );
-        } finally {
-          setLoading(
-            false
-          );
+        // 여행이 없으면 일정도 비운다.
+        if (!tripData) {
+          setSchedules([]);
+          return;
         }
-      },
-      []
-    );
 
-  useFocusEffect(
+        // 서버에서 받은 여행 ID가 없으면
+        // 해당 여행의 일정을 조회할 수 없다.
+        if (!tripData.id) {
+          console.error(
+            "여행 ID가 없습니다."
+          );
+
+          setSchedules([]);
+
+          return;
+        }
+
+        // 현재 여행 ID에 해당하는 일정만 조회한다.
+        const scheduleData =
+          await fetchSchedules(
+            tripData.id
+          );
+
+        const sorted =
+          [...scheduleData].sort(
+            (a, b) => {
+              const first =
+                `${a.date} ${a.time}`;
+
+              const second =
+                `${b.date} ${b.time}`;
+
+              return first.localeCompare(
+                second
+              );
+            }
+          );
+
+        setSchedules(sorted);
+      } catch (error) {
+        console.error(
+          "일정 불러오기 실패:",
+          error
+        );
+
+        Alert.alert(
+          "일정 불러오기 실패",
+          "서버에서 일정을 불러오지 못했습니다. 백엔드와 ngrok 연결을 확인해주세요."
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
+  
+    useFocusEffect(
     useCallback(() => {
       loadData();
     }, [loadData])

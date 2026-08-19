@@ -23,7 +23,7 @@ import AppButton from "../../components/AppButton";
 import AppInput from "../../components/AppInput";
 
 import {
-  getTrip
+  getTrip,
 } from "../../lib/storage";
 
 import {
@@ -68,26 +68,37 @@ export default function CreateScheduleScreen() {
   const [address, setAddress] =
     useState("");
 
-  const [latitude, setLatitude] =
-    useState<number | undefined>(
-      undefined
-    );
+  const [
+    latitude,
+    setLatitude,
+  ] =
+    useState<
+      number | undefined
+    >(undefined);
 
-  const [longitude, setLongitude] =
-    useState<number | undefined>(
-      undefined
-    );
+  const [
+    longitude,
+    setLongitude,
+  ] =
+    useState<
+      number | undefined
+    >(undefined);
 
-  const [placeId, setPlaceId] =
-    useState<string | undefined>(
-      undefined
-    );
+  const [
+    placeId,
+    setPlaceId,
+  ] =
+    useState<
+      string | undefined
+    >(undefined);
 
   const [
     placeResults,
     setPlaceResults,
   ] =
-    useState<PlaceResult[]>([]);
+    useState<PlaceResult[]>(
+      []
+    );
 
   const [
     searchingPlace,
@@ -101,7 +112,10 @@ export default function CreateScheduleScreen() {
   ] =
     useState(false);
 
-  const [category, setCategory] =
+  const [
+    category,
+    setCategory,
+  ] =
     useState<ScheduleCategory>(
       "관광"
     );
@@ -230,7 +244,9 @@ export default function CreateScheduleScreen() {
         false
       );
 
-      setPlaceResults([]);
+      setPlaceResults(
+        []
+      );
 
       const trip =
         await getTrip();
@@ -261,6 +277,7 @@ export default function CreateScheduleScreen() {
       );
     } catch (error) {
       console.error(
+        "장소 검색 실패:",
         error
       );
 
@@ -302,7 +319,9 @@ export default function CreateScheduleScreen() {
       true
     );
 
-    setPlaceResults([]);
+    setPlaceResults(
+      []
+    );
   }
 
   function handleLocationChange(
@@ -326,6 +345,10 @@ export default function CreateScheduleScreen() {
 
     setPlaceId(
       undefined
+    );
+
+    setPlaceResults(
+      []
     );
   }
 
@@ -384,7 +407,6 @@ export default function CreateScheduleScreen() {
   }
 
   async function handleSave() {
-    
     if (
       !title.trim() ||
       !location.trim()
@@ -404,6 +426,15 @@ export default function CreateScheduleScreen() {
       Alert.alert(
         "여행 정보 없음",
         "먼저 여행을 생성해주세요."
+      );
+
+      return;
+    }
+
+    if (!trip.id) {
+      Alert.alert(
+        "여행 정보 오류",
+        "여행 ID가 없습니다. 여행을 다시 생성해주세요."
       );
 
       return;
@@ -455,91 +486,113 @@ export default function CreateScheduleScreen() {
       return;
     }
 
-    const newSchedule: Schedule =
-      {
-        id:
-          Date.now().toString(),
+    const newSchedule: Schedule = {
+      id:
+        Date.now().toString(),
+
+      tripId:
+        trip.id,
+
+      title:
+        title.trim(),
+
+      location:
+        location.trim(),
+
+      address:
+        address ||
+        undefined,
+
+      latitude,
+
+      longitude,
+
+      placeId,
+
+      date:
+        formatDate(
+          date
+        ),
+
+      time:
+        formatTime(
+          time
+        ),
+
+      category,
+
+      durationMinutes,
+
+      memo:
+        memo.trim(),
+    };
+
+    try {
+      await createSchedule({
+        tripId:
+          trip.id,
 
         title:
-          title.trim(),
+          newSchedule.title,
 
         location:
-          location.trim(),
+          newSchedule.location,
 
         address:
-          address ||
-          undefined,
+          newSchedule.address,
 
-        latitude,
+        latitude:
+          newSchedule.latitude,
 
-        longitude,
+        longitude:
+          newSchedule.longitude,
 
-        placeId,
+        placeId:
+          newSchedule.placeId,
+
+        category:
+          newSchedule.category,
+
+        durationMinutes:
+          newSchedule.durationMinutes,
 
         date:
-          formatDate(date),
+          newSchedule.date,
 
         time:
-          formatTime(time),
-
-        category,
-
-        durationMinutes,
+          newSchedule.time,
 
         memo:
-          memo.trim(),
-      };
+          newSchedule.memo,
+      });
 
-    await createSchedule({
-  title:
-    newSchedule.title,
+      Alert.alert(
+        "완료",
+        selectedPlace
+          ? "장소 위치와 함께 일정이 저장되었습니다."
+          : "일정이 저장되었습니다. 장소는 직접 입력된 값으로 저장되었습니다.",
+        [
+          {
+            text: "확인",
 
-  location:
-    newSchedule.location,
+            onPress: () =>
+              router.replace(
+                "/schedule"
+              ),
+          },
+        ]
+      );
+    } catch (error) {
+      console.error(
+        "일정 저장 실패:",
+        error
+      );
 
-  address:
-    newSchedule.address,
-
-  latitude:
-    newSchedule.latitude,
-
-  longitude:
-    newSchedule.longitude,
-
-  placeId:
-    newSchedule.placeId,
-
-  category:
-    newSchedule.category,
-
-  durationMinutes:
-    newSchedule.durationMinutes,
-
-  date:
-    newSchedule.date,
-
-  time:
-    newSchedule.time,
-
-  memo:
-    newSchedule.memo,
-});
-
-    Alert.alert(
-      "완료",
-      selectedPlace
-        ? "장소 위치와 함께 일정이 저장되었습니다."
-        : "일정이 저장되었습니다. 장소는 직접 입력된 값으로 저장되었습니다.",
-      [
-        {
-          text: "확인",
-          onPress: () =>
-            router.replace(
-              "/schedule"
-            ),
-        },
-      ]
-    );
+      Alert.alert(
+        "일정 저장 실패",
+        "서버에 일정을 저장하지 못했습니다."
+      );
+    }
   }
 
   return (
@@ -564,13 +617,15 @@ export default function CreateScheduleScreen() {
           color: "#111827",
         }}
       >
-        일정 추가 TEST123
+        일정 추가
       </Text>
 
       <AppInput
         placeholder="일정 이름 (예: 센소지 관광)"
         value={title}
-        onChangeText={setTitle}
+        onChangeText={
+          setTitle
+        }
       />
 
       <Text
@@ -586,7 +641,8 @@ export default function CreateScheduleScreen() {
 
       <View
         style={{
-          flexDirection: "row",
+          flexDirection:
+            "row",
           gap: 8,
         }}
       >
@@ -674,6 +730,7 @@ export default function CreateScheduleScreen() {
                 marginTop: 5,
                 color: "#4B5563",
                 fontSize: 13,
+                lineHeight: 18,
               }}
             >
               {address}
@@ -691,7 +748,8 @@ export default function CreateScheduleScreen() {
             backgroundColor:
               "white",
             borderRadius: 14,
-            overflow: "hidden",
+            overflow:
+              "hidden",
           }}
         >
           {placeResults.map(
@@ -763,7 +821,8 @@ export default function CreateScheduleScreen() {
 
       <View
         style={{
-          flexDirection: "row",
+          flexDirection:
+            "row",
           flexWrap: "wrap",
           gap: 8,
           marginBottom: 22,
@@ -825,7 +884,8 @@ export default function CreateScheduleScreen() {
 
       <View
         style={{
-          flexDirection: "row",
+          flexDirection:
+            "row",
           flexWrap: "wrap",
           gap: 8,
           marginBottom: 22,
@@ -839,7 +899,9 @@ export default function CreateScheduleScreen() {
 
             return (
               <Pressable
-                key={minutes}
+                key={
+                  minutes
+                }
                 onPress={() =>
                   setDurationMinutes(
                     minutes
@@ -921,7 +983,9 @@ export default function CreateScheduleScreen() {
             color: "#111827",
           }}
         >
-          📅 {formatDate(date)}
+          📅 {formatDate(
+            date
+          )}
         </Text>
       </Pressable>
 
@@ -1000,7 +1064,9 @@ export default function CreateScheduleScreen() {
             color: "#111827",
           }}
         >
-          🕐 {formatTime(time)}
+          🕐 {formatTime(
+            time
+          )}
         </Text>
       </Pressable>
 
@@ -1064,7 +1130,9 @@ export default function CreateScheduleScreen() {
       <AppInput
         placeholder="예: 입장권 미리 구매, 사진 찍기"
         value={memo}
-        onChangeText={setMemo}
+        onChangeText={
+          setMemo
+        }
       />
 
       <View
