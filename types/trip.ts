@@ -10,7 +10,6 @@ export interface Trip {
   startDate: string;
   endDate: string;
   people: string;
-
   members?: TripMember[];
 }
 
@@ -58,6 +57,10 @@ export type ExpenseType =
   | "shared"
   | "loan";
 
+export type PaymentMethod =
+  | "cash"
+  | "card";
+
 export interface Expense {
   id: string;
 
@@ -73,6 +76,9 @@ export interface Expense {
 
   expenseType?: ExpenseType;
 
+  // 실제 어떤 수단으로 지불했는지
+  paymentMethod?: PaymentMethod;
+
   // 공동 지출
   payer?: string;
   participants?: string[];
@@ -80,10 +86,19 @@ export interface Expense {
   // 돈 빌려주기
   lender?: string;
   borrower?: string;
+  
+  // 대여금 개별 정산 상태
+  loanSettled?: boolean;
+  loanSettledAt?: string;
 }
 
 export interface ExpenseSettings {
+  // 여행 전체 예산
   budgetKrw: number;
+
+  // 출발 시 보유 자금
+  cashBudgetKrw: number;
+  cardBudgetKrw: number;
 
   defaultCurrency: CurrencyCode;
 
@@ -93,4 +108,19 @@ export interface ExpenseSettings {
     USD: number;
     EUR: number;
   };
+}
+
+// 실제로 사람끼리 돈을 주고받아서
+// 정산이 끝났다는 기록
+export interface SettlementPayment {
+  id: string;
+
+  from: string;
+  to: string;
+
+  amountKrw: number;
+
+  date: string;
+
+  memo?: string;
 }

@@ -17,11 +17,14 @@ import { useFocusEffect } from "expo-router";
 
 import {
   deleteExpense,
+  deleteSettlementPayment,
   getExpenseSettings,
   getExpenses,
+  getSettlementPayments,
   getTrip,
   saveExpenseSettings,
   saveExpenses,
+  saveSettlementPayments,
 } from "../../lib/storage";
 
 import {
@@ -30,6 +33,8 @@ import {
   ExpenseCategory,
   ExpenseSettings,
   ExpenseType,
+  PaymentMethod,
+  SettlementPayment,
   Trip,
 } from "../../types";
 
@@ -63,7 +68,18 @@ export default function ExpenseScreen() {
   const [expenses, setExpenses] =
     useState<Expense[]>([]);
 
+  const [
+    settlementPayments,
+    setSettlementPayments,
+  ] = useState<SettlementPayment[]>([]);
+
   const [budget, setBudget] =
+    useState("");
+
+  const [cashBudget, setCashBudget] =
+    useState("");
+
+  const [cardBudget, setCardBudget] =
     useState("");
 
   const [amount, setAmount] =
@@ -78,20 +94,33 @@ export default function ExpenseScreen() {
   const [currency, setCurrency] =
     useState<CurrencyCode>("JPY");
 
-  const [exchangeRates, setExchangeRates] =
-    useState(defaultRates);
+  const [
+    paymentMethod,
+    setPaymentMethod,
+  ] = useState<PaymentMethod>("cash");
+
+  const [
+    exchangeRates,
+    setExchangeRates,
+  ] = useState(defaultRates);
 
   const [rateInput, setRateInput] =
     useState("900");
 
-  const [expenseType, setExpenseType] =
-    useState<ExpenseType>("personal");
+  const [
+    expenseType,
+    setExpenseType,
+  ] = useState<ExpenseType>(
+    "personal"
+  );
 
   const [payer, setPayer] =
     useState("나");
 
-  const [participants, setParticipants] =
-    useState<string[]>(["나"]);
+  const [
+    participants,
+    setParticipants,
+  ] = useState<string[]>(["나"]);
 
   const [lender, setLender] =
     useState("나");
@@ -136,6 +165,11 @@ export default function ExpenseScreen() {
       return getTripMembers(trip);
     }, [trip]);
 
+  // ★ 핵심
+  // 여행의 첫 번째 멤버를 현재 사용자로 취급
+  const currentUserName =
+    memberNames[0] ?? "나";
+
   function getDefaultCurrency(
     country?: string
   ): CurrencyCode {
@@ -159,7 +193,9 @@ export default function ExpenseScreen() {
     if (
       value.includes("미국") ||
       value.includes("usa") ||
-      value.includes("united states")
+      value.includes(
+        "united states"
+      )
     ) {
       return "USD";
     }
@@ -171,9 +207,13 @@ export default function ExpenseScreen() {
     selectedCurrency: CurrencyCode,
     rates: typeof defaultRates
   ) {
-    if (selectedCurrency === "JPY") {
+    if (
+      selectedCurrency === "JPY"
+    ) {
       return String(
-        Math.round(rates.JPY * 100)
+        Math.round(
+          rates.JPY * 100
+        )
       );
     }
 
@@ -184,32 +224,51 @@ export default function ExpenseScreen() {
     );
   }
 
-  const loadData = useCallback(
-    async () => {
+  const loadData =
+    useCallback(async () => {
       const tripData =
         await getTrip();
 
       const expenseData =
         await getExpenses();
 
+      const paymentData =
+        await getSettlementPayments();
+
       const savedSettings =
         await getExpenseSettings();
 
       setTrip(tripData);
 
+      setExpenses(
+        [...expenseData].sort(
+          (a, b) =>
+            `${b.date}`.localeCompare(
+              `${a.date}`
+            )
+        )
+      );
+
+      setSettlementPayments(
+        paymentData
+      );
+
       const members =
         getTripMembers(tripData);
+
+      const me =
+        members[0] ?? "나";
 
       setPayer((current) =>
         members.includes(current)
           ? current
-          : members[0]
+          : me
       );
 
       setLender((current) =>
         members.includes(current)
           ? current
-          : members[0]
+          : me
       );
 
       setBorrower((current) => {
@@ -222,41 +281,45 @@ export default function ExpenseScreen() {
 
         return (
           members.find(
-            (name) =>
-              name !== members[0]
-          ) ?? members[0]
+            (name) => name !== me
+          ) ?? me
         );
       });
 
-      setParticipants((current) => {
-        const valid =
-          current.filter(
-            (name) =>
-              members.includes(name)
-          );
+      setParticipants(
+        (current) => {
+          const valid =
+            current.filter(
+              (name) =>
+                members.includes(name)
+            );
 
-        return valid.length > 0
-          ? valid
-          : members;
-      });
-
-      const sorted = [
-        ...expenseData,
-      ].sort((a, b) =>
-        `${b.date}`.localeCompare(
-          `${a.date}`
-        )
+          return valid.length > 0
+            ? valid
+            : members;
+        }
       );
-
-      setExpenses(sorted);
 
       if (savedSettings) {
         setBudget(
-          savedSettings.budgetKrw
-            ? String(
-                savedSettings.budgetKrw
-              )
-            : ""
+          String(
+            savedSettings.budgetKrw ??
+              0
+          )
+        );
+
+        setCashBudget(
+          String(
+            savedSettings.cashBudgetKrw ??
+              0
+          )
+        );
+
+        setCardBudget(
+          String(
+            savedSettings.cardBudgetKrw ??
+              0
+          )
         );
 
         setCurrency(
@@ -290,45 +353,13 @@ export default function ExpenseScreen() {
           )
         );
       }
-    },
-    []
-  );
+    }, []);
 
   useFocusEffect(
     useCallback(() => {
       loadData();
     }, [loadData])
   );
-
-  // 돈 빌려주기는 실제 여행 지출에서 제외
-  const totalExpenseKrw =
-    useMemo(() => {
-      return expenses.reduce(
-        (sum, expense) => {
-          if (
-            expense.expenseType ===
-            "loan"
-          ) {
-            return sum;
-          }
-
-          return (
-            sum +
-            (expense.krwAmount ?? 0)
-          );
-        },
-        0
-      );
-    }, [expenses]);
-
-  const budgetNumber =
-    Number(
-      budget.replace(/,/g, "")
-    ) || 0;
-
-  const remaining =
-    budgetNumber -
-    totalExpenseKrw;
 
   function formatMoney(
     value: number
@@ -382,7 +413,7 @@ export default function ExpenseScreen() {
       return 1;
     }
 
-    const input =
+    const value =
       Number(
         rateInput.replace(
           /,/g,
@@ -390,38 +421,248 @@ export default function ExpenseScreen() {
         )
       );
 
-    if (!input) {
+    if (!value) {
       return 0;
     }
 
     if (
       selectedCurrency === "JPY"
     ) {
-      return input / 100;
+      return value / 100;
     }
 
-    return input;
+    return value;
   }
 
+  const budgetNumber =
+    Number(
+      budget.replace(/,/g, "")
+    ) || 0;
+
+  const cashBudgetNumber =
+    Number(
+      cashBudget.replace(/,/g, "")
+    ) || 0;
+
+  const cardBudgetNumber =
+    Number(
+      cardBudget.replace(/,/g, "")
+    ) || 0;
+
+  // 일반 여행 지출
+  const totalExpenseKrw =
+    useMemo(() => {
+      return expenses.reduce(
+        (sum, expense) => {
+          if (
+            expense.expenseType ===
+            "loan"
+          ) {
+            return sum;
+          }
+
+          return (
+            sum +
+            (expense.krwAmount ??
+              0)
+          );
+        },
+        0
+      );
+    }, [expenses]);
+
+  const cashExpenseKrw =
+    useMemo(() => {
+      return expenses.reduce(
+        (sum, expense) => {
+          if (
+            expense.expenseType ===
+            "loan"
+          ) {
+            return sum;
+          }
+
+          if (
+            expense.paymentMethod !==
+            "cash"
+          ) {
+            return sum;
+          }
+
+          return (
+            sum +
+            (expense.krwAmount ??
+              0)
+          );
+        },
+        0
+      );
+    }, [expenses]);
+
+  const cardExpenseKrw =
+    useMemo(() => {
+      return expenses.reduce(
+        (sum, expense) => {
+          if (
+            expense.expenseType ===
+            "loan"
+          ) {
+            return sum;
+          }
+
+          if (
+            expense.paymentMethod !==
+            "card"
+          ) {
+            return sum;
+          }
+
+          return (
+            sum +
+            (expense.krwAmount ??
+              0)
+          );
+        },
+        0
+      );
+    }, [expenses]);
+
+  const remaining =
+    budgetNumber -
+    totalExpenseKrw;
+
+  const baseCashRemaining =
+    cashBudgetNumber -
+    cashExpenseKrw;
+
+  const baseCardRemaining =
+    cardBudgetNumber -
+    cardExpenseKrw;
+
+  // ★ 대여금 계산
+  const loanSummary =
+    useMemo(() => {
+      let borrowedCash = 0;
+      let borrowedCard = 0;
+
+      let lentCash = 0;
+      let lentCard = 0;
+
+      expenses.forEach(
+        (expense) => {
+          if (
+            expense.expenseType !==
+            "loan"
+          ) {
+            return;
+          }
+
+          // 정산된 대여금은
+          // 현재 보유금에 더 이상 영향 없음
+          if (
+            expense.loanSettled
+          ) {
+            return;
+          }
+
+          const value =
+            expense.krwAmount ?? 0;
+
+          const method =
+            expense.paymentMethod ??
+            "cash";
+
+          // 내가 빌려준 돈
+          if (
+            expense.lender ===
+            currentUserName
+          ) {
+            if (
+              method === "cash"
+            ) {
+              lentCash += value;
+            } else {
+              lentCard += value;
+            }
+          }
+
+          // 내가 빌린 돈
+          if (
+            expense.borrower ===
+            currentUserName
+          ) {
+            if (
+              method === "cash"
+            ) {
+              borrowedCash +=
+                value;
+            } else {
+              borrowedCard +=
+                value;
+            }
+          }
+        }
+      );
+
+      return {
+        borrowedCash,
+        borrowedCard,
+
+        lentCash,
+        lentCard,
+
+        borrowedTotal:
+          borrowedCash +
+          borrowedCard,
+
+        lentTotal:
+          lentCash +
+          lentCard,
+      };
+    }, [
+      expenses,
+      currentUserName,
+    ]);
+
+  // 실제 현재 가지고 있는 돈
+  const actualCashRemaining =
+    baseCashRemaining +
+    loanSummary.borrowedCash -
+    loanSummary.lentCash;
+
+  const actualCardRemaining =
+    baseCardRemaining +
+    loanSummary.borrowedCard -
+    loanSummary.lentCard;
+
+  const actualTotalRemaining =
+    actualCashRemaining +
+    actualCardRemaining;
+
   async function saveSettings(
-    newCurrency = currency,
-    newRates = exchangeRates
+    newCurrency =
+      currency,
+
+    newRates =
+      exchangeRates
   ) {
-    const settings: ExpenseSettings = {
-      budgetKrw:
-        Number(
-          budget.replace(
-            /,/g,
-            ""
-          )
-        ) || 0,
+    const settings: ExpenseSettings =
+      {
+        budgetKrw:
+          budgetNumber,
 
-      defaultCurrency:
-        newCurrency,
+        cashBudgetKrw:
+          cashBudgetNumber,
 
-      exchangeRates:
-        newRates,
-    };
+        cardBudgetKrw:
+          cardBudgetNumber,
+
+        defaultCurrency:
+          newCurrency,
+
+        exchangeRates:
+          newRates,
+      };
 
     await saveExpenseSettings(
       settings
@@ -429,11 +670,29 @@ export default function ExpenseScreen() {
   }
 
   async function handleBudgetSave() {
+    if (
+      cashBudgetNumber +
+        cardBudgetNumber !==
+      budgetNumber
+    ) {
+      Alert.alert(
+        "예산 확인",
+        `현금 + 카드 금액이 총예산과 다릅니다.\n\n총예산: ₩${formatMoney(
+          budgetNumber
+        )}\n현금+카드: ₩${formatMoney(
+          cashBudgetNumber +
+            cardBudgetNumber
+        )}`
+      );
+
+      return;
+    }
+
     await saveSettings();
 
     Alert.alert(
       "저장 완료",
-      "여행 예산이 저장되었습니다."
+      "여행 자금을 저장했습니다."
     );
   }
 
@@ -462,7 +721,6 @@ export default function ExpenseScreen() {
       calculateRate(currency);
 
     if (
-      !calculatedRate ||
       calculatedRate <= 0
     ) {
       Alert.alert(
@@ -475,6 +733,7 @@ export default function ExpenseScreen() {
 
     const newRates = {
       ...exchangeRates,
+
       [currency]:
         calculatedRate,
     };
@@ -489,8 +748,8 @@ export default function ExpenseScreen() {
     );
 
     Alert.alert(
-      "환율 저장",
-      "현재 환율을 저장했습니다."
+      "완료",
+      "환율을 저장했습니다."
     );
   }
 
@@ -515,8 +774,7 @@ export default function ExpenseScreen() {
       }
 
       return (
-        localAmount *
-        rate
+        localAmount * rate
       );
     }, [
       amount,
@@ -527,7 +785,8 @@ export default function ExpenseScreen() {
   const perPersonLocal =
     useMemo(() => {
       if (
-        expenseType !== "shared"
+        expenseType !==
+        "shared"
       ) {
         return 0;
       }
@@ -542,7 +801,8 @@ export default function ExpenseScreen() {
 
       if (
         !localAmount ||
-        participants.length === 0
+        participants.length ===
+          0
       ) {
         return 0;
       }
@@ -566,7 +826,8 @@ export default function ExpenseScreen() {
           current.includes(name)
         ) {
           if (
-            current.length === 1
+            current.length ===
+            1
           ) {
             return current;
           }
@@ -610,20 +871,21 @@ export default function ExpenseScreen() {
       calculateRate(currency);
 
     if (
-      !rate ||
       rate <= 0
     ) {
       Alert.alert(
         "환율 확인",
-        "먼저 환율을 확인해주세요."
+        "환율을 확인해주세요."
       );
 
       return;
     }
 
     if (
-      expenseType === "shared" &&
-      participants.length === 0
+      expenseType ===
+        "shared" &&
+      participants.length ===
+        0
     ) {
       Alert.alert(
         "참여자 확인",
@@ -634,7 +896,8 @@ export default function ExpenseScreen() {
     }
 
     if (
-      expenseType === "loan" &&
+      expenseType ===
+        "loan" &&
       lender === borrower
     ) {
       Alert.alert(
@@ -650,52 +913,65 @@ export default function ExpenseScreen() {
         localAmount * rate
       );
 
-    const newExpense: Expense = {
-      id:
-        Date.now().toString(),
+    const newExpense: Expense =
+      {
+        id:
+          Date.now().toString(),
 
-      localAmount,
+        localAmount,
 
-      currency,
+        currency,
 
-      exchangeRate: rate,
+        exchangeRate:
+          rate,
 
-      krwAmount,
+        krwAmount,
 
-      category,
+        category,
 
-      date:
-        getTodayString(),
+        date:
+          getTodayString(),
 
-      memo:
-        memo.trim(),
+        memo:
+          memo.trim(),
 
-      expenseType,
+        expenseType,
 
-      payer:
-        expenseType ===
-        "shared"
-          ? payer
-          : undefined,
+        paymentMethod,
 
-      participants:
-        expenseType ===
-        "shared"
-          ? participants
-          : undefined,
+        payer:
+          expenseType ===
+          "shared"
+            ? payer
+            : undefined,
 
-      lender:
-        expenseType ===
-        "loan"
-          ? lender
-          : undefined,
+        participants:
+          expenseType ===
+          "shared"
+            ? participants
+            : undefined,
 
-      borrower:
-        expenseType ===
-        "loan"
-          ? borrower
-          : undefined,
-    };
+        lender:
+          expenseType ===
+          "loan"
+            ? lender
+            : undefined,
+
+        borrower:
+          expenseType ===
+          "loan"
+            ? borrower
+            : undefined,
+
+        loanSettled:
+          expenseType ===
+          "loan"
+            ? false
+            : undefined,
+
+        loanSettledAt:
+          undefined,
+      };
 
     const current =
       await getExpenses();
@@ -716,11 +992,7 @@ export default function ExpenseScreen() {
   ) {
     Alert.alert(
       "기록 삭제",
-      `${currencySymbol(
-        expense.currency
-      )}${formatMoney(
-        expense.localAmount
-      )} 기록을 삭제할까요?`,
+      "이 기록을 삭제할까요?",
       [
         {
           text: "취소",
@@ -729,7 +1001,8 @@ export default function ExpenseScreen() {
 
         {
           text: "삭제",
-          style: "destructive",
+          style:
+            "destructive",
 
           onPress:
             async () => {
@@ -744,23 +1017,102 @@ export default function ExpenseScreen() {
     );
   }
 
+  async function toggleLoanSettlement(
+    expense: Expense
+  ) {
+    if (
+      expense.expenseType !==
+      "loan"
+    ) {
+      return;
+    }
+
+    const nextSettled =
+      !expense.loanSettled;
+
+    Alert.alert(
+      nextSettled
+        ? "정산 완료"
+        : "정산 완료 취소",
+
+      nextSettled
+        ? `${expense.borrower} → ${expense.lender}\n₩${formatMoney(
+            expense.krwAmount
+          )}\n\n실제로 갚은 것이 맞나요?`
+        : "이 대여금을 다시 미정산 상태로 바꿀까요?",
+
+      [
+        {
+          text: "취소",
+          style: "cancel",
+        },
+
+        {
+          text:
+            nextSettled
+              ? "정산 완료"
+              : "미정산으로 변경",
+
+          onPress:
+            async () => {
+              const current =
+                await getExpenses();
+
+              const updated =
+                current.map(
+                  (
+                    item: Expense
+                  ) =>
+                    item.id ===
+                    expense.id
+                      ? {
+                          ...item,
+
+                          loanSettled:
+                            nextSettled,
+
+                          loanSettledAt:
+                            nextSettled
+                              ? getTodayString()
+                              : undefined,
+                        }
+                      : item
+                );
+
+              await saveExpenses(
+                updated
+              );
+
+              await loadData();
+            },
+        },
+      ]
+    );
+  }
+
   function rateLabel() {
-    if (currency === "JPY") {
+    if (
+      currency === "JPY"
+    ) {
       return "100 JPY = 몇 원?";
     }
 
-    if (currency === "USD") {
+    if (
+      currency === "USD"
+    ) {
       return "1 USD = 몇 원?";
     }
 
-    if (currency === "EUR") {
+    if (
+      currency === "EUR"
+    ) {
       return "1 EUR = 몇 원?";
     }
 
-    return "KRW";
+    return "";
   }
 
-  // 공동 지출 + 빌려준 돈을 모두 합친 최종 정산
+  // 공동지출 + 미정산 대여금
   const settlements =
     useMemo(() => {
       const balances: Record<
@@ -776,7 +1128,6 @@ export default function ExpenseScreen() {
 
       expenses.forEach(
         (expense) => {
-          // 공동지출
           if (
             expense.expenseType ===
               "shared" &&
@@ -787,78 +1138,72 @@ export default function ExpenseScreen() {
           ) {
             const share =
               expense.krwAmount /
-              expense.participants
+              expense
+                .participants
                 .length;
-
-            if (
-              balances[
-                expense.payer
-              ] === undefined
-            ) {
-              balances[
-                expense.payer
-              ] = 0;
-            }
 
             balances[
               expense.payer
-            ] +=
+            ] =
+              (balances[
+                expense.payer
+              ] ?? 0) +
               expense.krwAmount;
 
             expense.participants.forEach(
               (name) => {
-                if (
-                  balances[name] ===
-                  undefined
-                ) {
-                  balances[name] = 0;
-                }
-
-                balances[name] -=
+                balances[name] =
+                  (balances[
+                    name
+                  ] ?? 0) -
                   share;
               }
             );
           }
 
-          // 빌려준 돈
           if (
             expense.expenseType ===
               "loan" &&
+            !expense.loanSettled &&
             expense.lender &&
             expense.borrower
           ) {
-            if (
-              balances[
-                expense.lender
-              ] === undefined
-            ) {
-              balances[
-                expense.lender
-              ] = 0;
-            }
-
-            if (
-              balances[
-                expense.borrower
-              ] === undefined
-            ) {
-              balances[
-                expense.borrower
-              ] = 0;
-            }
-
-            // lender는 받을 돈 증가
             balances[
               expense.lender
-            ] +=
+            ] =
+              (balances[
+                expense.lender
+              ] ?? 0) +
               expense.krwAmount;
 
-            // borrower는 갚을 돈 증가
             balances[
               expense.borrower
-            ] -=
+            ] =
+              (balances[
+                expense.borrower
+              ] ?? 0) -
               expense.krwAmount;
           }
+        }
+      );
+
+      settlementPayments.forEach(
+        (payment) => {
+          balances[
+            payment.from
+          ] =
+            (balances[
+              payment.from
+            ] ?? 0) +
+            payment.amountKrw;
+
+          balances[
+            payment.to
+          ] =
+            (balances[
+              payment.to
+            ] ?? 0) -
+            payment.amountKrw;
         }
       );
 
@@ -867,17 +1212,14 @@ export default function ExpenseScreen() {
           balances
         )
           .filter(
-            ([, balance]) =>
-              balance > 1
+            ([, value]) =>
+              value > 1
           )
           .map(
-            ([
-              name,
-              balance,
-            ]) => ({
+            ([name, value]) => ({
               name,
               amount:
-                balance,
+                value,
             })
           );
 
@@ -886,17 +1228,14 @@ export default function ExpenseScreen() {
           balances
         )
           .filter(
-            ([, balance]) =>
-              balance < -1
+            ([, value]) =>
+              value < -1
           )
           .map(
-            ([
-              name,
-              balance,
-            ]) => ({
+            ([name, value]) => ({
               name,
               amount:
-                -balance,
+                -value,
             })
           );
 
@@ -953,13 +1292,15 @@ export default function ExpenseScreen() {
           payment;
 
         if (
-          creditor.amount < 1
+          creditor.amount <
+          1
         ) {
           creditorIndex++;
         }
 
         if (
-          debtor.amount < 1
+          debtor.amount <
+          1
         ) {
           debtorIndex++;
         }
@@ -968,8 +1309,91 @@ export default function ExpenseScreen() {
       return result;
     }, [
       expenses,
+      settlementPayments,
       memberNames,
     ]);
+
+  async function completeSettlement(
+    from: string,
+    to: string,
+    amountKrw: number
+  ) {
+    Alert.alert(
+      "정산 완료",
+      `${from} → ${to}\n₩${formatMoney(
+        amountKrw
+      )}\n\n실제로 송금이 완료됐나요?`,
+      [
+        {
+          text: "취소",
+          style: "cancel",
+        },
+
+        {
+          text: "완료",
+
+          onPress:
+            async () => {
+              const newPayment: SettlementPayment =
+                {
+                  id:
+                    Date.now().toString(),
+
+                  from,
+
+                  to,
+
+                  amountKrw,
+
+                  date:
+                    getTodayString(),
+                };
+
+              const current =
+                await getSettlementPayments();
+
+              await saveSettlementPayments(
+                [
+                  ...current,
+                  newPayment,
+                ]
+              );
+
+              await loadData();
+            },
+        },
+      ]
+    );
+  }
+
+  async function cancelSettlement(
+    payment: SettlementPayment
+  ) {
+    Alert.alert(
+      "정산 완료 취소",
+      "이 정산 완료 기록을 취소할까요?",
+      [
+        {
+          text: "취소",
+          style: "cancel",
+        },
+
+        {
+          text:
+            "완료 취소",
+
+          onPress:
+            async () => {
+              await deleteSettlementPayment(
+                payment.id
+              );
+
+              await loadData();
+            },
+        },
+      ]
+    );
+  }
 
   return (
     <ScrollView
@@ -1005,7 +1429,7 @@ export default function ExpenseScreen() {
         </Text>
       )}
 
-      {/* 예산 */}
+      {/* 여행 자금 */}
       <View
         style={{
           marginTop: 24,
@@ -1017,28 +1441,93 @@ export default function ExpenseScreen() {
       >
         <Text
           style={{
-            fontSize: 16,
+            fontSize: 20,
             fontWeight: "bold",
-            color: "#374151",
+            color: "#111827",
           }}
         >
-          여행 총예산 (원화)
+          여행 자금
+        </Text>
+
+        <Text
+          style={{
+            marginTop: 14,
+            color: "#374151",
+            fontWeight: "bold",
+          }}
+        >
+          총 여행 예산
         </Text>
 
         <TextInput
           value={budget}
           onChangeText={setBudget}
-          placeholder="예: 1000000"
+          placeholder="예: 2000000"
           placeholderTextColor="#9CA3AF"
           keyboardType="numeric"
           style={{
-            marginTop: 10,
+            marginTop: 7,
             backgroundColor:
               "#F9FAFB",
             color: "#111827",
             borderRadius: 12,
             padding: 14,
-            fontSize: 18,
+          }}
+        />
+
+        <Text
+          style={{
+            marginTop: 14,
+            color: "#374151",
+            fontWeight: "bold",
+          }}
+        >
+          현금으로 준비한 금액
+        </Text>
+
+        <TextInput
+          value={cashBudget}
+          onChangeText={
+            setCashBudget
+          }
+          placeholder="예: 200000"
+          placeholderTextColor="#9CA3AF"
+          keyboardType="numeric"
+          style={{
+            marginTop: 7,
+            backgroundColor:
+              "#F9FAFB",
+            color: "#111827",
+            borderRadius: 12,
+            padding: 14,
+          }}
+        />
+
+        <Text
+          style={{
+            marginTop: 14,
+            color: "#374151",
+            fontWeight: "bold",
+          }}
+        >
+          카드에 사용할 금액
+        </Text>
+
+        <TextInput
+          value={cardBudget}
+          onChangeText={
+            setCardBudget
+          }
+          placeholder="예: 1800000"
+          placeholderTextColor="#9CA3AF"
+          keyboardType="numeric"
+          style={{
+            marginTop: 7,
+            backgroundColor:
+              "#F9FAFB",
+            color: "#111827",
+            borderRadius: 12,
+            padding: 14,
           }}
         />
 
@@ -1047,11 +1536,11 @@ export default function ExpenseScreen() {
             handleBudgetSave
           }
           style={{
-            marginTop: 10,
+            marginTop: 14,
             backgroundColor:
-              "#111827",
-            borderRadius: 10,
-            paddingVertical: 10,
+              "#64748B",
+            paddingVertical: 12,
+            borderRadius: 11,
             alignItems:
               "center",
           }}
@@ -1062,20 +1551,18 @@ export default function ExpenseScreen() {
               fontWeight: "bold",
             }}
           >
-            예산 저장
+            여행 자금 저장
           </Text>
         </Pressable>
 
         <View
           style={{
-            flexDirection: "row",
-            gap: 10,
             marginTop: 18,
+            gap: 10,
           }}
         >
           <View
             style={{
-              flex: 1,
               backgroundColor:
                 "#EFF6FF",
               borderRadius: 14,
@@ -1084,55 +1571,19 @@ export default function ExpenseScreen() {
           >
             <Text
               style={{
-                color: "#6B7280",
-                fontSize: 13,
+                color:
+                  "#6B7280",
               }}
             >
-              총 지출
+              전체 남은 예산
             </Text>
 
             <Text
               style={{
-                marginTop: 5,
-                fontSize: 19,
+                marginTop: 4,
+                fontSize: 22,
                 fontWeight: "bold",
                 color: "#2563EB",
-              }}
-            >
-              ₩
-              {formatMoney(
-                totalExpenseKrw
-              )}
-            </Text>
-          </View>
-
-          <View
-            style={{
-              flex: 1,
-              backgroundColor:
-                "#ECFDF5",
-              borderRadius: 14,
-              padding: 14,
-            }}
-          >
-            <Text
-              style={{
-                color: "#6B7280",
-                fontSize: 13,
-              }}
-            >
-              남은 예산
-            </Text>
-
-            <Text
-              style={{
-                marginTop: 5,
-                fontSize: 19,
-                fontWeight: "bold",
-                color:
-                  remaining < 0
-                    ? "#DC2626"
-                    : "#059669",
               }}
             >
               ₩
@@ -1141,6 +1592,221 @@ export default function ExpenseScreen() {
               )}
             </Text>
           </View>
+
+          <View
+            style={{
+              flexDirection: "row",
+              gap: 10,
+            }}
+          >
+            <View
+              style={{
+                flex: 1,
+                backgroundColor:
+                  "#ECFDF5",
+                borderRadius: 14,
+                padding: 14,
+              }}
+            >
+              <Text
+                style={{
+                  color:
+                    "#6B7280",
+                }}
+              >
+                현금 잔액
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 4,
+                  fontSize: 18,
+                  fontWeight:
+                    "bold",
+
+                  color:
+                    actualCashRemaining <
+                    0
+                      ? "#DC2626"
+                      : "#059669",
+                }}
+              >
+                ₩
+                {formatMoney(
+                  actualCashRemaining
+                )}
+              </Text>
+            </View>
+
+            <View
+              style={{
+                flex: 1,
+                backgroundColor:
+                  "#F5F3FF",
+                borderRadius: 14,
+                padding: 14,
+              }}
+            >
+              <Text
+                style={{
+                  color:
+                    "#6B7280",
+                }}
+              >
+                카드 잔액
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 4,
+                  fontSize: 18,
+                  fontWeight:
+                    "bold",
+
+                  color:
+                    actualCardRemaining <
+                    0
+                      ? "#DC2626"
+                      : "#7C3AED",
+                }}
+              >
+                ₩
+                {formatMoney(
+                  actualCardRemaining
+                )}
+              </Text>
+            </View>
+          </View>
+
+          {(loanSummary.borrowedTotal >
+            0 ||
+            loanSummary.lentTotal >
+              0) && (
+            <View
+              style={{
+                backgroundColor:
+                  "#F8F7FF",
+                borderRadius: 14,
+                padding: 14,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 16,
+                  fontWeight: "bold",
+                  color: "#374151",
+                }}
+              >
+                대여금 현황
+              </Text>
+
+              {loanSummary.borrowedTotal >
+                0 && (
+                <View
+                  style={{
+                    marginTop: 10,
+                    flexDirection:
+                      "row",
+                    justifyContent:
+                      "space-between",
+                  }}
+                >
+                  <Text
+                    style={{
+                      color:
+                        "#6B7280",
+                    }}
+                  >
+                    빌린 돈
+                  </Text>
+
+                  <Text
+                    style={{
+                      color:
+                        "#7C6FB0",
+                      fontWeight:
+                        "bold",
+                    }}
+                  >
+                    +₩
+                    {formatMoney(
+                      loanSummary.borrowedTotal
+                    )}
+                  </Text>
+                </View>
+              )}
+
+              {loanSummary.lentTotal >
+                0 && (
+                <View
+                  style={{
+                    marginTop: 10,
+                    flexDirection:
+                      "row",
+                    justifyContent:
+                      "space-between",
+                  }}
+                >
+                  <Text
+                    style={{
+                      color:
+                        "#6B7280",
+                    }}
+                  >
+                    빌려준 돈
+                  </Text>
+
+                  <Text
+                    style={{
+                      color:
+                        "#7C6FB0",
+                      fontWeight:
+                        "bold",
+                    }}
+                  >
+                    -₩
+                    {formatMoney(
+                      loanSummary.lentTotal
+                    )}
+                  </Text>
+                </View>
+              )}
+
+              <View
+                style={{
+                  marginTop: 12,
+                  paddingTop: 12,
+                  borderTopWidth: 1,
+                  borderTopColor:
+                    "#E5E7EB",
+                }}
+              >
+                <Text
+                  style={{
+                    color:
+                      "#6B7280",
+                    fontSize: 12,
+                  }}
+                >
+                  현재 실제 보유자금
+                </Text>
+
+                <Text
+                  style={{
+                    marginTop: 3,
+                    fontSize: 19,
+                    fontWeight: "bold",
+                    color: "#374151",
+                  }}
+                >
+                  ₩
+                  {formatMoney(
+                    actualTotalRemaining
+                  )}
+                </Text>
+              </View>
+            </View>
+          )}
         </View>
       </View>
 
@@ -1212,11 +1878,12 @@ export default function ExpenseScreen() {
           )}
         </View>
 
-        {currency !== "KRW" && (
+        {currency !==
+          "KRW" && (
           <>
             <Text
               style={{
-                marginTop: 16,
+                marginTop: 15,
                 color: "#6B7280",
               }}
             >
@@ -1232,7 +1899,7 @@ export default function ExpenseScreen() {
               placeholderTextColor="#9CA3AF"
               keyboardType="numeric"
               style={{
-                marginTop: 8,
+                marginTop: 7,
                 backgroundColor:
                   "#F9FAFB",
                 color: "#111827",
@@ -1248,7 +1915,7 @@ export default function ExpenseScreen() {
               style={{
                 marginTop: 10,
                 backgroundColor:
-                  "#111827",
+                  "#64748B",
                 borderRadius: 10,
                 paddingVertical: 10,
                 alignItems:
@@ -1268,7 +1935,7 @@ export default function ExpenseScreen() {
         )}
       </View>
 
-      {/* 지출 추가 */}
+      {/* 기록 추가 */}
       <View
         style={{
           marginTop: 22,
@@ -1293,7 +1960,7 @@ export default function ExpenseScreen() {
             flexDirection: "row",
             flexWrap: "wrap",
             gap: 8,
-            marginTop: 16,
+            marginTop: 15,
           }}
         >
           {[
@@ -1303,65 +1970,159 @@ export default function ExpenseScreen() {
               label:
                 "개인 지출",
             },
+
             {
               value:
                 "shared" as ExpenseType,
               label:
                 "공동 지출",
             },
+
             {
               value:
                 "loan" as ExpenseType,
               label:
                 "돈 빌려주기",
             },
-          ].map((item) => (
-            <Pressable
-              key={item.value}
-              onPress={() => {
-                setExpenseType(
-                  item.value
-                );
-
-                if (
-                  item.value ===
-                  "shared"
-                ) {
-                  setParticipants(
-                    memberNames
+          ].map(
+            (item) => (
+              <Pressable
+                key={item.value}
+                onPress={() => {
+                  setExpenseType(
+                    item.value
                   );
-                }
-              }}
-              style={{
-                paddingHorizontal: 14,
-                paddingVertical: 11,
-                borderRadius: 12,
 
-                backgroundColor:
-                  expenseType ===
-                  item.value
-                    ? "#3B82F6"
-                    : "#F3F4F6",
-              }}
-            >
-              <Text
+                  if (
+                    item.value ===
+                    "shared"
+                  ) {
+                    setParticipants(
+                      memberNames
+                    );
+                  }
+                }}
                 style={{
-                  color:
+                  paddingHorizontal: 14,
+                  paddingVertical: 10,
+                  borderRadius: 12,
+
+                  backgroundColor:
                     expenseType ===
                     item.value
-                      ? "white"
-                      : "#374151",
-
-                  fontWeight: "bold",
+                      ? "#3B82F6"
+                      : "#F3F4F6",
                 }}
               >
-                {item.label}
-              </Text>
-            </Pressable>
-          ))}
+                <Text
+                  style={{
+                    color:
+                      expenseType ===
+                      item.value
+                        ? "white"
+                        : "#374151",
+
+                    fontWeight:
+                      "bold",
+                  }}
+                >
+                  {item.label}
+                </Text>
+              </Pressable>
+            )
+          )}
         </View>
 
-        {/* 공동 지출 */}
+        <Text
+          style={{
+            marginTop: 18,
+            fontWeight: "bold",
+            color: "#374151",
+          }}
+        >
+          {expenseType === "loan"
+            ? "돈을 주고받은 방법"
+            : "결제수단"}
+        </Text>
+
+        <View
+          style={{
+            flexDirection: "row",
+            gap: 8,
+            marginTop: 9,
+          }}
+        >
+          <Pressable
+            onPress={() =>
+              setPaymentMethod(
+                "cash"
+              )
+            }
+            style={{
+              flex: 1,
+              alignItems: "center",
+              paddingVertical: 11,
+              borderRadius: 12,
+
+              backgroundColor:
+                paymentMethod ===
+                "cash"
+                  ? "#059669"
+                  : "#F3F4F6",
+            }}
+          >
+            <Text
+              style={{
+                color:
+                  paymentMethod ===
+                  "cash"
+                    ? "white"
+                    : "#374151",
+
+                fontWeight:
+                  "bold",
+              }}
+            >
+              💵 현금
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() =>
+              setPaymentMethod(
+                "card"
+              )
+            }
+            style={{
+              flex: 1,
+              alignItems: "center",
+              paddingVertical: 11,
+              borderRadius: 12,
+
+              backgroundColor:
+                paymentMethod ===
+                "card"
+                  ? "#7C3AED"
+                  : "#F3F4F6",
+            }}
+          >
+            <Text
+              style={{
+                color:
+                  paymentMethod ===
+                  "card"
+                    ? "white"
+                    : "#374151",
+
+                fontWeight:
+                  "bold",
+              }}
+            >
+              💳 카드
+            </Text>
+          </Pressable>
+        </View>
+
         {expenseType ===
           "shared" && (
           <>
@@ -1372,7 +2133,7 @@ export default function ExpenseScreen() {
                 color: "#374151",
               }}
             >
-              누가 계산했나요?
+              결제자
             </Text>
 
             <View
@@ -1380,7 +2141,7 @@ export default function ExpenseScreen() {
                 flexDirection: "row",
                 flexWrap: "wrap",
                 gap: 8,
-                marginTop: 10,
+                marginTop: 8,
               }}
             >
               {memberNames.map(
@@ -1391,8 +2152,7 @@ export default function ExpenseScreen() {
                       setPayer(name)
                     }
                     style={{
-                      paddingHorizontal: 14,
-                      paddingVertical: 9,
+                      padding: 10,
                       borderRadius: 20,
 
                       backgroundColor:
@@ -1409,9 +2169,6 @@ export default function ExpenseScreen() {
                           name
                             ? "white"
                             : "#374151",
-
-                        fontWeight:
-                          "bold",
                       }}
                     >
                       {name}
@@ -1428,7 +2185,7 @@ export default function ExpenseScreen() {
                 color: "#374151",
               }}
             >
-              같이 쓴 사람
+              참여자
             </Text>
 
             <View
@@ -1436,7 +2193,7 @@ export default function ExpenseScreen() {
                 flexDirection: "row",
                 flexWrap: "wrap",
                 gap: 8,
-                marginTop: 10,
+                marginTop: 8,
               }}
             >
               {memberNames.map(
@@ -1455,8 +2212,7 @@ export default function ExpenseScreen() {
                         )
                       }
                       style={{
-                        paddingHorizontal: 14,
-                        paddingVertical: 9,
+                        padding: 10,
                         borderRadius: 20,
 
                         backgroundColor:
@@ -1471,9 +2227,6 @@ export default function ExpenseScreen() {
                             selected
                               ? "white"
                               : "#374151",
-
-                          fontWeight:
-                            "bold",
                         }}
                       >
                         {selected
@@ -1489,7 +2242,6 @@ export default function ExpenseScreen() {
           </>
         )}
 
-        {/* 돈 빌려주기 */}
         {expenseType ===
           "loan" && (
           <>
@@ -1508,7 +2260,7 @@ export default function ExpenseScreen() {
                 flexDirection: "row",
                 flexWrap: "wrap",
                 gap: 8,
-                marginTop: 10,
+                marginTop: 8,
               }}
             >
               {memberNames.map(
@@ -1519,8 +2271,7 @@ export default function ExpenseScreen() {
                       setLender(name)
                     }
                     style={{
-                      paddingHorizontal: 14,
-                      paddingVertical: 9,
+                      padding: 10,
                       borderRadius: 20,
 
                       backgroundColor:
@@ -1537,9 +2288,6 @@ export default function ExpenseScreen() {
                           name
                             ? "white"
                             : "#374151",
-
-                        fontWeight:
-                          "bold",
                       }}
                     >
                       {name}
@@ -1564,7 +2312,7 @@ export default function ExpenseScreen() {
                 flexDirection: "row",
                 flexWrap: "wrap",
                 gap: 8,
-                marginTop: 10,
+                marginTop: 8,
               }}
             >
               {memberNames.map(
@@ -1577,8 +2325,7 @@ export default function ExpenseScreen() {
                       )
                     }
                     style={{
-                      paddingHorizontal: 14,
-                      paddingVertical: 9,
+                      padding: 10,
                       borderRadius: 20,
 
                       backgroundColor:
@@ -1595,9 +2342,6 @@ export default function ExpenseScreen() {
                           name
                             ? "white"
                             : "#374151",
-
-                        fontWeight:
-                          "bold",
                       }}
                     >
                       {name}
@@ -1611,7 +2355,9 @@ export default function ExpenseScreen() {
 
         <TextInput
           value={amount}
-          onChangeText={setAmount}
+          onChangeText={
+            setAmount
+          }
           placeholder={`금액 (${currency})`}
           placeholderTextColor="#9CA3AF"
           keyboardType="numeric"
@@ -1630,10 +2376,10 @@ export default function ExpenseScreen() {
           <View
             style={{
               marginTop: 10,
+              padding: 12,
+              borderRadius: 12,
               backgroundColor:
                 "#EFF6FF",
-              borderRadius: 12,
-              padding: 12,
             }}
           >
             <Text
@@ -1660,7 +2406,7 @@ export default function ExpenseScreen() {
                 0 && (
                 <Text
                   style={{
-                    marginTop: 6,
+                    marginTop: 5,
                     color: "#374151",
                   }}
                 >
@@ -1676,20 +2422,6 @@ export default function ExpenseScreen() {
                   )}
                 </Text>
               )}
-
-            {expenseType ===
-              "loan" && (
-              <Text
-                style={{
-                  marginTop: 6,
-                  color: "#374151",
-                }}
-              >
-                {borrower} →{" "}
-                {lender}에게 갚을 금액으로
-                기록됩니다.
-              </Text>
-            )}
           </View>
         )}
 
@@ -1711,7 +2443,7 @@ export default function ExpenseScreen() {
                 flexDirection: "row",
                 flexWrap: "wrap",
                 gap: 8,
-                marginTop: 10,
+                marginTop: 8,
               }}
             >
               {categories.map(
@@ -1724,8 +2456,7 @@ export default function ExpenseScreen() {
                       )
                     }
                     style={{
-                      paddingHorizontal: 14,
-                      paddingVertical: 9,
+                      padding: 10,
                       borderRadius: 20,
 
                       backgroundColor:
@@ -1742,9 +2473,6 @@ export default function ExpenseScreen() {
                           item
                             ? "white"
                             : "#374151",
-
-                        fontWeight:
-                          "bold",
                       }}
                     >
                       {item}
@@ -1760,7 +2488,8 @@ export default function ExpenseScreen() {
           value={memo}
           onChangeText={setMemo}
           placeholder={
-            expenseType === "loan"
+            expenseType ===
+            "loan"
               ? "메모 (예: 현금 부족)"
               : "메모 (예: 라멘)"
           }
@@ -1783,8 +2512,8 @@ export default function ExpenseScreen() {
             marginTop: 16,
             backgroundColor:
               "#3B82F6",
-            borderRadius: 12,
             paddingVertical: 14,
+            borderRadius: 12,
             alignItems:
               "center",
           }}
@@ -1795,10 +2524,7 @@ export default function ExpenseScreen() {
               fontWeight: "bold",
             }}
           >
-            {expenseType ===
-            "loan"
-              ? "빌려준 돈 저장"
-              : "지출 저장"}
+            기록 저장
           </Text>
         </Pressable>
       </View>
@@ -1823,25 +2549,15 @@ export default function ExpenseScreen() {
           최종 정산
         </Text>
 
-        <Text
-          style={{
-            marginTop: 6,
-            color: "#6B7280",
-            fontSize: 13,
-          }}
-        >
-          공동 지출과 빌려준 돈을 합산해서 계산합니다.
-        </Text>
-
         {settlements.length ===
         0 ? (
           <Text
             style={{
               marginTop: 12,
-              color: "#6B7280",
+              color: "#059669",
             }}
           >
-            현재 정산할 금액이 없습니다.
+            현재 미정산 금액이 없습니다.
           </Text>
         ) : (
           settlements.map(
@@ -1854,14 +2570,25 @@ export default function ExpenseScreen() {
                 style={{
                   marginTop: 12,
                   backgroundColor:
-                    "#F9FAFB",
+                    "#FEF2F2",
                   borderRadius: 12,
                   padding: 14,
                 }}
               >
                 <Text
                   style={{
-                    fontSize: 16,
+                    color:
+                      "#DC2626",
+                    fontWeight:
+                      "bold",
+                  }}
+                >
+                  ● 미정산
+                </Text>
+
+                <Text
+                  style={{
+                    marginTop: 7,
                     fontWeight:
                       "bold",
                     color:
@@ -1875,9 +2602,9 @@ export default function ExpenseScreen() {
                 <Text
                   style={{
                     marginTop: 5,
+                    fontSize: 19,
                     color:
-                      "#2563EB",
-                    fontSize: 18,
+                      "#DC2626",
                     fontWeight:
                       "bold",
                   }}
@@ -1887,13 +2614,137 @@ export default function ExpenseScreen() {
                     settlement.amount
                   )}
                 </Text>
+
+                <Pressable
+                  onPress={() =>
+                    completeSettlement(
+                      settlement.from,
+                      settlement.to,
+                      settlement.amount
+                    )
+                  }
+                  style={{
+                    marginTop: 10,
+                    backgroundColor:
+                      "#64748B",
+                    paddingVertical: 10,
+                    borderRadius: 10,
+                    alignItems:
+                      "center",
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: "white",
+                      fontWeight:
+                        "bold",
+                    }}
+                  >
+                    정산 완료
+                  </Text>
+                </Pressable>
               </View>
             )
           )
         )}
       </View>
 
-      {/* 기록 내역 */}
+      {settlementPayments.length >
+        0 && (
+        <View
+          style={{
+            marginTop: 22,
+            backgroundColor:
+              "white",
+            borderRadius: 18,
+            padding: 18,
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 20,
+              fontWeight: "bold",
+              color: "#111827",
+            }}
+          >
+            정산 완료 내역
+          </Text>
+
+          {settlementPayments.map(
+            (payment) => (
+              <View
+                key={payment.id}
+                style={{
+                  marginTop: 12,
+                  backgroundColor:
+                    "#ECFDF5",
+                  borderRadius: 12,
+                  padding: 14,
+                }}
+              >
+                <Text
+                  style={{
+                    color:
+                      "#059669",
+                    fontWeight:
+                      "bold",
+                  }}
+                >
+                  ✅ 정산 완료
+                </Text>
+
+                <Text
+                  style={{
+                    marginTop: 7,
+                    fontWeight:
+                      "bold",
+                  }}
+                >
+                  {payment.from} →{" "}
+                  {payment.to}
+                </Text>
+
+                <Text
+                  style={{
+                    marginTop: 5,
+                    color:
+                      "#059669",
+                    fontWeight:
+                      "bold",
+                  }}
+                >
+                  ₩
+                  {formatMoney(
+                    payment.amountKrw
+                  )}
+                </Text>
+
+                <Pressable
+                  onPress={() =>
+                    cancelSettlement(
+                      payment
+                    )
+                  }
+                  style={{
+                    marginTop: 9,
+                    backgroundColor:
+                      "#F3F4F6",
+                    borderRadius: 8,
+                    paddingVertical: 8,
+                    alignItems:
+                      "center",
+                  }}
+                >
+                  <Text>
+                    정산 완료 취소
+                  </Text>
+                </Pressable>
+              </View>
+            )
+          )}
+        </View>
+      )}
+
       <Text
         style={{
           marginTop: 28,
@@ -1902,17 +2753,17 @@ export default function ExpenseScreen() {
           color: "#111827",
         }}
       >
-        기록 내역
+        전체 기록
       </Text>
 
       {expenses.length === 0 ? (
         <View
           style={{
-            marginTop: 14,
+            marginTop: 12,
+            padding: 18,
+            borderRadius: 16,
             backgroundColor:
               "white",
-            borderRadius: 16,
-            padding: 18,
           }}
         >
           <Text
@@ -1930,10 +2781,10 @@ export default function ExpenseScreen() {
               key={expense.id}
               style={{
                 marginTop: 12,
+                padding: 16,
                 backgroundColor:
                   "white",
                 borderRadius: 16,
-                padding: 16,
               }}
             >
               {expense.expenseType ===
@@ -1941,9 +2792,9 @@ export default function ExpenseScreen() {
                 <>
                   <Text
                     style={{
-                      fontSize: 17,
                       fontWeight:
                         "bold",
+                      fontSize: 17,
                       color:
                         "#7C3AED",
                     }}
@@ -1954,103 +2805,137 @@ export default function ExpenseScreen() {
                   <Text
                     style={{
                       marginTop: 8,
-                      color:
-                        "#111827",
                       fontWeight:
                         "bold",
                     }}
                   >
-                    {expense.lender} →{" "}
-                    {expense.borrower}
+                    {expense.borrower} →{" "}
+                    {expense.lender}
                   </Text>
+
+                  <Text
+                    style={{
+                      marginTop: 6,
+                      color:
+                        "#6B7280",
+                    }}
+                  >
+                    {expense.paymentMethod ===
+                    "cash"
+                      ? "💵 현금"
+                      : "💳 카드"}
+                  </Text>
+
+                  <Pressable
+                    onPress={() =>
+                      toggleLoanSettlement(
+                        expense
+                      )
+                    }
+                    style={{
+                      marginTop: 12,
+                      paddingVertical: 11,
+                      borderRadius: 10,
+                      alignItems:
+                        "center",
+
+                      backgroundColor:
+                        expense.loanSettled
+                          ? "#ECFDF5"
+                          : "#FEE2E2",
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontWeight:
+                          "bold",
+
+                        color:
+                          expense.loanSettled
+                            ? "#059669"
+                            : "#DC2626",
+                      }}
+                    >
+                      {expense.loanSettled
+                        ? "✅ 정산 완료"
+                        : "● 미정산"}
+                    </Text>
+                  </Pressable>
                 </>
               ) : (
-                <Text
-                  style={{
-                    fontSize: 17,
-                    fontWeight:
-                      "bold",
-                    color:
-                      "#111827",
-                  }}
-                >
-                  {expense.category}
-                </Text>
+                <>
+                  <Text
+                    style={{
+                      fontWeight:
+                        "bold",
+                      fontSize: 17,
+                    }}
+                  >
+                    {expense.category}
+                  </Text>
+
+                  <Text
+                    style={{
+                      marginTop: 6,
+                      color:
+                        "#6B7280",
+                    }}
+                  >
+                    {expense.paymentMethod ===
+                    "cash"
+                      ? "💵 현금"
+                      : "💳 카드"}
+                  </Text>
+                </>
               )}
 
               <Text
                 style={{
-                  marginTop: 6,
+                  marginTop: 10,
+                  fontSize: 18,
+                  fontWeight: "bold",
+                }}
+              >
+                {currencySymbol(
+                  expense.currency
+                )}
+                {formatMoney(
+                  expense.localAmount
+                )}
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 3,
                   color: "#6B7280",
                 }}
               >
-                {expense.date}
+                ≈ ₩
+                {formatMoney(
+                  expense.krwAmount
+                )}
               </Text>
-
-              {expense.expenseType ===
-                "shared" && (
-                <Text
-                  style={{
-                    marginTop: 6,
-                    color:
-                      "#7C3AED",
-                    fontWeight:
-                      "bold",
-                  }}
-                >
-                  공동지출 ·{" "}
-                  {expense.payer} 결제 ·{" "}
-                  {expense
-                    .participants
-                    ?.length ?? 0}
-                  명
-                </Text>
-              )}
-
-              <View
-                style={{
-                  marginTop: 10,
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 18,
-                    fontWeight:
-                      "bold",
-                  }}
-                >
-                  {currencySymbol(
-                    expense.currency
-                  )}
-                  {formatMoney(
-                    expense.localAmount
-                  )}
-                </Text>
-
-                <Text
-                  style={{
-                    marginTop: 4,
-                    color:
-                      "#6B7280",
-                  }}
-                >
-                  ≈ ₩
-                  {formatMoney(
-                    expense.krwAmount
-                  )}
-                </Text>
-              </View>
 
               {expense.memo?.trim() ? (
                 <Text
                   style={{
-                    marginTop: 10,
+                    marginTop: 8,
                     color: "#4B5563",
                   }}
                 >
                   📝 {expense.memo}
                 </Text>
               ) : null}
+
+              <Text
+                style={{
+                  marginTop: 6,
+                  color: "#9CA3AF",
+                  fontSize: 12,
+                }}
+              >
+                {expense.date}
+              </Text>
 
               <Pressable
                 onPress={() =>
@@ -2062,20 +2947,21 @@ export default function ExpenseScreen() {
                   marginTop: 12,
                   backgroundColor:
                     "#FEECEC",
-                  borderRadius: 10,
-                  paddingVertical: 9,
+                  paddingVertical: 8,
+                  borderRadius: 9,
                   alignItems:
                     "center",
                 }}
               >
                 <Text
                   style={{
-                    color: "#DC2626",
+                    color:
+                      "#DC2626",
                     fontWeight:
                       "bold",
                   }}
                 >
-                  삭제
+                  기록 삭제
                 </Text>
               </Pressable>
             </View>

@@ -160,3 +160,42 @@ export async function deleteExpenseSettings() {
     EXPENSE_SETTINGS_KEY
   );
 }
+const SETTLEMENT_PAYMENT_KEY =
+  "@travelai_settlement_payments";
+
+export async function saveSettlementPayments(
+  payments: any[]
+) {
+  await AsyncStorage.setItem(
+    SETTLEMENT_PAYMENT_KEY,
+    JSON.stringify(payments)
+  );
+}
+
+export async function getSettlementPayments() {
+  const data =
+    await AsyncStorage.getItem(
+      SETTLEMENT_PAYMENT_KEY
+    );
+
+  return data
+    ? JSON.parse(data)
+    : [];
+}
+
+export async function deleteSettlementPayment(
+  id: string
+) {
+  const payments =
+    await getSettlementPayments();
+
+  const remaining =
+    payments.filter(
+      (payment: any) =>
+        payment.id !== id
+    );
+
+  await saveSettlementPayments(
+    remaining
+  );
+}
