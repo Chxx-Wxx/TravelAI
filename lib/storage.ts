@@ -4,6 +4,7 @@ const TRIP_KEY = "@travelai_trip";
 const SCHEDULE_KEY = "@travelai_schedule";
 const EXPENSE_KEY = "@travelai_expenses";
 const EXPENSE_SETTINGS_KEY = "@travelai_expense_settings";
+const PACKING_KEY = "@travelai_packing_items";
 
 // 여행
 export async function saveTrip(trip: any) {
@@ -200,5 +201,84 @@ export async function deleteSettlementPayment(
 
   await saveSettlementPayments(
     remaining
+  );
+}
+// 준비물 체크리스트
+
+export async function savePackingItems(
+  items: any[]
+) {
+  await AsyncStorage.setItem(
+    PACKING_KEY,
+    JSON.stringify(items)
+  );
+}
+
+export async function getPackingItems() {
+  const data =
+    await AsyncStorage.getItem(
+      PACKING_KEY
+    );
+
+  return data
+    ? JSON.parse(data)
+    : [];
+}
+
+export async function addPackingItem(
+  item: any
+) {
+  const items =
+    await getPackingItems();
+
+  await savePackingItems([
+    ...items,
+    item,
+  ]);
+}
+
+export async function updatePackingItem(
+  updatedItem: any
+) {
+  const items =
+    await getPackingItems();
+
+  const updatedItems =
+    items.map(
+      (item: any) =>
+        item.id ===
+        updatedItem.id
+          ? {
+              ...item,
+              ...updatedItem,
+            }
+          : item
+    );
+
+  await savePackingItems(
+    updatedItems
+  );
+}
+
+export async function deletePackingItem(
+  id: string
+) {
+  const items =
+    await getPackingItems();
+
+  const remaining =
+    items.filter(
+      (item: any) =>
+        item.id !== id
+    );
+
+  await savePackingItems(
+    remaining
+  );
+}
+
+export async function clearPackingItems() {
+  await AsyncStorage.removeItem(
+    PACKING_KEY
   );
 }

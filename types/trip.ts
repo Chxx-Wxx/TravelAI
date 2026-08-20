@@ -127,3 +127,10 @@ export interface SettlementPayment {
 
   memo?: string;
 }
+export interface PackingItem {
+  id: string;
+
+  name: string;
+
+  checked: boolean;
+}
