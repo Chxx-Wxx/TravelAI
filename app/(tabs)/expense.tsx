@@ -471,6 +471,75 @@ export default function ExpenseScreen() {
       );
     }, [expenses]);
 
+  // 오늘 사용한 일반 여행 지출
+  // 대여금은 실제 소비가 아니므로 오늘 지출에서 제외
+  const todayExpenses =
+    useMemo(() => {
+      const today =
+        getTodayString();
+
+      return expenses.filter(
+        (expense) =>
+          expense.date ===
+            today &&
+          expense.expenseType !==
+            "loan"
+      );
+    }, [expenses]);
+
+  const todayExpenseKrw =
+    useMemo(() => {
+      return todayExpenses.reduce(
+        (sum, expense) =>
+          sum +
+          (expense.krwAmount ??
+            0),
+        0
+      );
+    }, [todayExpenses]);
+
+  const todayCashExpenseKrw =
+    useMemo(() => {
+      return todayExpenses.reduce(
+        (sum, expense) => {
+          if (
+            expense.paymentMethod !==
+            "cash"
+          ) {
+            return sum;
+          }
+
+          return (
+            sum +
+            (expense.krwAmount ??
+              0)
+          );
+        },
+        0
+      );
+    }, [todayExpenses]);
+
+  const todayCardExpenseKrw =
+    useMemo(() => {
+      return todayExpenses.reduce(
+        (sum, expense) => {
+          if (
+            expense.paymentMethod !==
+            "card"
+          ) {
+            return sum;
+          }
+
+          return (
+            sum +
+            (expense.krwAmount ??
+              0)
+          );
+        },
+        0
+      );
+    }, [todayExpenses]);
+
   const cashExpenseKrw =
     useMemo(() => {
       return expenses.reduce(
@@ -1428,6 +1497,143 @@ export default function ExpenseScreen() {
           {trip.tripName}
         </Text>
       )}
+
+      {/* 오늘 지출 요약 */}
+      <View
+        style={{
+          marginTop: 24,
+          backgroundColor:
+            "white",
+          borderRadius: 18,
+          padding: 18,
+        }}
+      >
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent:
+              "space-between",
+            alignItems: "center",
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 20,
+              fontWeight: "bold",
+              color: "#111827",
+            }}
+          >
+            오늘 지출
+          </Text>
+
+          <Text
+            style={{
+              fontSize: 13,
+              color: "#6B7280",
+            }}
+          >
+            {todayExpenses.length}건
+          </Text>
+        </View>
+
+        <Text
+          style={{
+            marginTop: 14,
+            fontSize: 28,
+            fontWeight: "bold",
+            color: "#111827",
+          }}
+        >
+          ₩
+          {formatMoney(
+            todayExpenseKrw
+          )}
+        </Text>
+
+        <Text
+          style={{
+            marginTop: 5,
+            color: "#6B7280",
+            fontSize: 13,
+          }}
+        >
+          오늘 기록된 일반 여행 지출 기준
+        </Text>
+
+        <View
+          style={{
+            marginTop: 16,
+            flexDirection: "row",
+            gap: 10,
+          }}
+        >
+          <View
+            style={{
+              flex: 1,
+              backgroundColor:
+                "#ECFDF5",
+              borderRadius: 12,
+              padding: 12,
+            }}
+          >
+            <Text
+              style={{
+                color: "#6B7280",
+                fontSize: 12,
+              }}
+            >
+              💵 현금
+            </Text>
+
+            <Text
+              style={{
+                marginTop: 5,
+                color: "#059669",
+                fontWeight: "bold",
+                fontSize: 16,
+              }}
+            >
+              ₩
+              {formatMoney(
+                todayCashExpenseKrw
+              )}
+            </Text>
+          </View>
+
+          <View
+            style={{
+              flex: 1,
+              backgroundColor:
+                "#F5F3FF",
+              borderRadius: 12,
+              padding: 12,
+            }}
+          >
+            <Text
+              style={{
+                color: "#6B7280",
+                fontSize: 12,
+              }}
+            >
+              💳 카드
+            </Text>
+
+            <Text
+              style={{
+                marginTop: 5,
+                color: "#7C3AED",
+                fontWeight: "bold",
+                fontSize: 16,
+              }}
+            >
+              ₩
+              {formatMoney(
+                todayCardExpenseKrw
+              )}
+            </Text>
+          </View>
+        </View>
+      </View>
 
       {/* 여행 자금 */}
       <View

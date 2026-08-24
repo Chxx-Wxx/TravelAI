@@ -18,8 +18,8 @@ import {
 
 import {
   deleteTrip,
-  getExpenseSettings,
   getExpenses,
+  getExpenseSettings,
   getTrip,
   saveSchedules,
 } from "../../lib/storage";
@@ -27,6 +27,11 @@ import {
 import {
   fetchSchedules,
 } from "../../services/schedule";
+
+import {
+  fetchWeather,
+  WeatherData,
+} from "../../services/weather";
 
 import {
   Expense,
@@ -67,6 +72,20 @@ export default function HomeScreen() {
     useState<
       ExpenseSettings | null
     >(null);
+
+  const [
+    weather,
+    setWeather,
+  ] =
+    useState<
+      WeatherData | null
+    >(null);
+
+  const [
+    weatherLoading,
+    setWeatherLoading,
+  ] =
+    useState(false);
 
   function getTodayString() {
     const today =
@@ -129,8 +148,60 @@ export default function HomeScreen() {
             settingsData
           );
 
+          // 여행이 없으면
+          // 일정과 날씨도 초기화
+          if (!tripData) {
+            setTodaySchedules(
+              []
+            );
+
+            setWeather(
+              null
+            );
+
+            return;
+          }
+
+          // 날씨 불러오기
           if (
-            !tripData?.id
+            tripData.city
+          ) {
+            setWeatherLoading(
+              true
+            );
+
+            try {
+              const weatherData =
+                await fetchWeather(
+                  tripData.city,
+                  tripData.country
+                );
+
+              setWeather(
+                weatherData
+              );
+            } catch (
+              error
+            ) {
+              console.error(
+                "날씨 불러오기 실패:",
+                error
+              );
+
+              setWeather(
+                null
+              );
+            } finally {
+              setWeatherLoading(
+                false
+              );
+            }
+          }
+
+          // 서버 여행 ID가 없으면
+          // 일정은 불러오지 않음
+          if (
+            !tripData.id
           ) {
             setTodaySchedules(
               []
@@ -151,15 +222,18 @@ export default function HomeScreen() {
             schedules
               .filter(
                 (
-                  schedule: Schedule
+                  schedule:
+                    Schedule
                 ) =>
                   schedule.date ===
                   today
               )
               .sort(
                 (
-                  a,
-                  b
+                  a:
+                    Schedule,
+                  b:
+                    Schedule
                 ) =>
                   a.time.localeCompare(
                     b.time
@@ -205,7 +279,8 @@ export default function HomeScreen() {
 
         {
           text: "삭제",
-          style: "destructive",
+          style:
+            "destructive",
 
           onPress:
             async () => {
@@ -221,6 +296,10 @@ export default function HomeScreen() {
 
               setTodaySchedules(
                 []
+              );
+
+              setWeather(
+                null
               );
 
               Alert.alert(
@@ -282,9 +361,12 @@ export default function HomeScreen() {
 
       <View
         style={{
-          flexDirection: "row",
+          flexDirection:
+            "row",
+
           justifyContent:
             "space-between",
+
           alignItems:
             "flex-start",
         }}
@@ -319,7 +401,7 @@ export default function HomeScreen() {
           </Text>
         </View>
 
-        {/* 준비물 작은 버튼 */}
+        {/* 준비물 */}
 
         <Pressable
           onPress={() =>
@@ -329,13 +411,19 @@ export default function HomeScreen() {
           }
           style={{
             marginTop: 2,
+
             backgroundColor:
               "white",
+
             borderRadius: 14,
+
             paddingHorizontal: 13,
+
             paddingVertical: 10,
+
             alignItems:
               "center",
+
             justifyContent:
               "center",
           }}
@@ -352,8 +440,10 @@ export default function HomeScreen() {
             style={{
               marginTop: 2,
               fontSize: 11,
+
               fontWeight:
                 "bold",
+
               color:
                 "#6B7280",
             }}
@@ -374,10 +464,14 @@ export default function HomeScreen() {
           }
           style={{
             marginTop: 25,
+
             backgroundColor:
               "#3B82F6",
+
             borderRadius: 14,
+
             paddingVertical: 15,
+
             alignItems:
               "center",
           }}
@@ -385,7 +479,9 @@ export default function HomeScreen() {
           <Text
             style={{
               color: "white",
+
               fontSize: 18,
+
               fontWeight:
                 "bold",
             }}
@@ -397,17 +493,22 @@ export default function HomeScreen() {
         <View
           style={{
             marginTop: 25,
+
             backgroundColor:
               "white",
+
             borderRadius: 18,
+
             padding: 20,
           }}
         >
           <Text
             style={{
               fontSize: 24,
+
               fontWeight:
                 "bold",
+
               color:
                 "#111827",
             }}
@@ -418,7 +519,9 @@ export default function HomeScreen() {
           <Text
             style={{
               marginTop: 12,
+
               fontSize: 16,
+
               color:
                 "#4B5563",
             }}
@@ -430,7 +533,9 @@ export default function HomeScreen() {
           <Text
             style={{
               marginTop: 8,
+
               fontSize: 16,
+
               color:
                 "#4B5563",
             }}
@@ -442,7 +547,9 @@ export default function HomeScreen() {
           <Text
             style={{
               marginTop: 8,
+
               fontSize: 16,
+
               color:
                 "#4B5563",
             }}
@@ -456,10 +563,14 @@ export default function HomeScreen() {
             }
             style={{
               marginTop: 20,
+
               backgroundColor:
                 "#FEECEC",
+
               borderRadius: 12,
+
               paddingVertical: 13,
+
               alignItems:
                 "center",
             }}
@@ -468,7 +579,9 @@ export default function HomeScreen() {
               style={{
                 color:
                   "#DC2626",
+
                 fontSize: 16,
+
                 fontWeight:
                   "bold",
               }}
@@ -479,14 +592,265 @@ export default function HomeScreen() {
         </View>
       )}
 
+      {/* 실제 날씨 */}
+
+      {trip && (
+        <View
+          style={{
+            marginTop: 20,
+
+            backgroundColor:
+              "white",
+
+            borderRadius: 16,
+
+            padding: 20,
+          }}
+        >
+          <View
+            style={{
+              flexDirection:
+                "row",
+
+              justifyContent:
+                "space-between",
+
+              alignItems:
+                "center",
+            }}
+          >
+            <View>
+              <Text
+                style={{
+                  fontSize: 20,
+
+                  fontWeight:
+                    "bold",
+
+                  color:
+                    "#111827",
+                }}
+              >
+                🌤 {trip.city} 날씨
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 7,
+
+                  fontSize: 13,
+
+                  color:
+                    "#9CA3AF",
+                }}
+              >
+                오늘의 여행 날씨
+              </Text>
+            </View>
+
+            <Text
+              style={{
+                fontSize: 38,
+              }}
+            >
+              {weather?.icon ??
+                "🌤️"}
+            </Text>
+          </View>
+
+          <View
+            style={{
+              marginTop: 18,
+
+              flexDirection:
+                "row",
+
+              alignItems:
+                "flex-end",
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 36,
+
+                fontWeight:
+                  "bold",
+
+                color:
+                  "#111827",
+              }}
+            >
+              {weather
+                ? Math.round(
+                    weather.temperature
+                  )
+                : "--"}
+            </Text>
+
+            <Text
+              style={{
+                marginLeft: 4,
+
+                marginBottom: 4,
+
+                fontSize: 18,
+
+                color:
+                  "#6B7280",
+              }}
+            >
+              °C
+            </Text>
+          </View>
+
+          <Text
+            style={{
+              marginTop: 8,
+
+              fontSize: 15,
+
+              color:
+                "#6B7280",
+            }}
+          >
+            {weatherLoading
+              ? "날씨 정보를 불러오는 중입니다."
+              : weather
+                ? weather.description
+                : "날씨 정보를 불러오지 못했습니다."}
+          </Text>
+
+          <View
+            style={{
+              marginTop: 18,
+
+              paddingTop: 16,
+
+              borderTopWidth: 1,
+
+              borderTopColor:
+                "#F3F4F6",
+
+              flexDirection:
+                "row",
+
+              justifyContent:
+                "space-between",
+            }}
+          >
+            <View>
+              <Text
+                style={{
+                  fontSize: 12,
+
+                  color:
+                    "#9CA3AF",
+                }}
+              >
+                최고
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 4,
+
+                  fontSize: 15,
+
+                  fontWeight:
+                    "bold",
+
+                  color:
+                    "#374151",
+                }}
+              >
+                {weather
+                  ? `${Math.round(
+                      weather.maxTemperature
+                    )}°`
+                  : "--°"}
+              </Text>
+            </View>
+
+            <View>
+              <Text
+                style={{
+                  fontSize: 12,
+
+                  color:
+                    "#9CA3AF",
+                }}
+              >
+                최저
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 4,
+
+                  fontSize: 15,
+
+                  fontWeight:
+                    "bold",
+
+                  color:
+                    "#374151",
+                }}
+              >
+                {weather
+                  ? `${Math.round(
+                      weather.minTemperature
+                    )}°`
+                  : "--°"}
+              </Text>
+            </View>
+
+            <View>
+              <Text
+                style={{
+                  fontSize: 12,
+
+                  color:
+                    "#9CA3AF",
+                }}
+              >
+                강수확률
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 4,
+
+                  fontSize: 15,
+
+                  fontWeight:
+                    "bold",
+
+                  color:
+                    "#374151",
+                }}
+              >
+                {weather
+                  ? `${Math.round(
+                      weather.precipitationProbability
+                    )}%`
+                  : "--%"}
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
+
       {/* 오늘 일정 */}
 
       <View
         style={{
           marginTop: 25,
+
           backgroundColor:
             "white",
+
           borderRadius: 16,
+
           padding: 20,
         }}
       >
@@ -494,8 +858,10 @@ export default function HomeScreen() {
           style={{
             flexDirection:
               "row",
+
             justifyContent:
               "space-between",
+
             alignItems:
               "center",
           }}
@@ -503,13 +869,16 @@ export default function HomeScreen() {
           <Text
             style={{
               fontSize: 20,
+
               fontWeight:
                 "bold",
+
               color:
                 "#111827",
             }}
           >
-            📅 오늘 일정
+            📅 오늘 일정 ·{" "}
+            {todaySchedules.length}개
           </Text>
 
           {trip && (
@@ -524,7 +893,9 @@ export default function HomeScreen() {
                 style={{
                   color:
                     "#3B82F6",
+
                   fontSize: 13,
+
                   fontWeight:
                     "bold",
                 }}
@@ -539,6 +910,7 @@ export default function HomeScreen() {
           <Text
             style={{
               marginTop: 12,
+
               color:
                 "#9CA3AF",
             }}
@@ -550,6 +922,7 @@ export default function HomeScreen() {
           <Text
             style={{
               marginTop: 12,
+
               color:
                 "#9CA3AF",
             }}
@@ -596,16 +969,17 @@ export default function HomeScreen() {
                   <Text
                     style={{
                       width: 58,
+
                       fontSize: 15,
+
                       fontWeight:
                         "bold",
+
                       color:
                         "#3B82F6",
                     }}
                   >
-                    {
-                      schedule.time
-                    }
+                    {schedule.time}
                   </Text>
 
                   <View
@@ -616,15 +990,15 @@ export default function HomeScreen() {
                     <Text
                       style={{
                         fontSize: 16,
+
                         fontWeight:
                           "bold",
+
                         color:
                           "#111827",
                       }}
                     >
-                      {
-                        schedule.title
-                      }
+                      {schedule.title}
                     </Text>
 
                     <Text
@@ -633,15 +1007,15 @@ export default function HomeScreen() {
                       }
                       style={{
                         marginTop: 4,
+
                         color:
                           "#6B7280",
+
                         fontSize: 13,
                       }}
                     >
                       📍{" "}
-                      {
-                        schedule.location
-                      }
+                      {schedule.location}
                     </Text>
                   </View>
                 </Pressable>
@@ -658,7 +1032,9 @@ export default function HomeScreen() {
                 }
                 style={{
                   marginTop: 6,
+
                   paddingVertical: 8,
+
                   alignItems:
                     "center",
                 }}
@@ -667,6 +1043,7 @@ export default function HomeScreen() {
                   style={{
                     color:
                       "#6B7280",
+
                     fontSize: 13,
                   }}
                 >
@@ -686,17 +1063,22 @@ export default function HomeScreen() {
       <View
         style={{
           marginTop: 20,
+
           backgroundColor:
             "white",
+
           borderRadius: 16,
+
           padding: 20,
         }}
       >
         <Text
           style={{
             fontSize: 20,
+
             fontWeight:
               "bold",
+
             color:
               "#111827",
           }}
@@ -708,6 +1090,7 @@ export default function HomeScreen() {
           <Text
             style={{
               marginTop: 10,
+
               color:
                 "#9CA3AF",
             }}
@@ -725,6 +1108,7 @@ export default function HomeScreen() {
               style={{
                 flexDirection:
                   "row",
+
                 justifyContent:
                   "space-between",
               }}
@@ -742,6 +1126,7 @@ export default function HomeScreen() {
                 style={{
                   fontWeight:
                     "bold",
+
                   color:
                     "#111827",
                 }}
@@ -756,6 +1141,7 @@ export default function HomeScreen() {
               style={{
                 flexDirection:
                   "row",
+
                 justifyContent:
                   "space-between",
               }}
@@ -773,6 +1159,7 @@ export default function HomeScreen() {
                 style={{
                   fontWeight:
                     "bold",
+
                   color:
                     "#DC2626",
                 }}
@@ -786,6 +1173,7 @@ export default function HomeScreen() {
             <View
               style={{
                 height: 1,
+
                 backgroundColor:
                   "#E5E7EB",
               }}
@@ -795,8 +1183,10 @@ export default function HomeScreen() {
               style={{
                 flexDirection:
                   "row",
+
                 justifyContent:
                   "space-between",
+
                 alignItems:
                   "center",
               }}
@@ -805,6 +1195,7 @@ export default function HomeScreen() {
                 style={{
                   color:
                     "#374151",
+
                   fontWeight:
                     "bold",
                 }}
@@ -815,8 +1206,10 @@ export default function HomeScreen() {
               <Text
                 style={{
                   fontSize: 18,
+
                   fontWeight:
                     "bold",
+
                   color:
                     "#2563EB",
                 }}
@@ -835,17 +1228,22 @@ export default function HomeScreen() {
       <View
         style={{
           marginTop: 20,
+
           backgroundColor:
             "white",
+
           borderRadius: 16,
+
           padding: 20,
         }}
       >
         <Text
           style={{
             fontSize: 20,
+
             fontWeight:
               "bold",
+
             color:
               "#111827",
           }}
@@ -856,6 +1254,7 @@ export default function HomeScreen() {
         <Text
           style={{
             marginTop: 10,
+
             color: "#777",
           }}
         >
