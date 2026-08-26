@@ -70,8 +70,10 @@ export interface Expense {
   localAmount: number;
   currency: CurrencyCode;
 
-  exchangeRate: number;
-  krwAmount: number;
+  // 새 기록은 저장 시점 값을 반드시 저장한다.
+  // 이전 버전의 AsyncStorage 기록에는 없을 수 있다.
+  exchangeRate?: number;
+  krwAmount?: number;
 
   category: ExpenseCategory;
   date: string;

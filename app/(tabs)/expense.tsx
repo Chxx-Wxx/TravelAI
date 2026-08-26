@@ -61,12 +61,304 @@ const defaultRates = {
   EUR: 1600,
 };
 
+type ExchangeRates =
+  ExpenseSettings["exchangeRates"];
+
+type ExpenseWithSnapshot =
+  Expense & {
+    exchangeRate: number;
+    krwAmount: number;
+  };
+
+function formatNumericInput(
+  value: string,
+  allowDecimal = false
+) {
+  const withoutCommas =
+    value.replace(/,/g, "");
+
+  const sanitized =
+    allowDecimal
+      ? withoutCommas.replace(
+          /[^\d.]/g,
+          ""
+        )
+      : withoutCommas.replace(
+          /\D/g,
+          ""
+        );
+
+  if (!sanitized) {
+    return "";
+  }
+
+  const decimalIndex =
+    sanitized.indexOf(".");
+
+  const integerPart =
+    (
+      decimalIndex >= 0
+        ? sanitized.slice(
+            0,
+            decimalIndex
+          )
+        : sanitized
+    ).replace(
+      /^0+(?=\d)/,
+      ""
+    ) || "0";
+
+  const formattedInteger =
+    integerPart.replace(
+      /\B(?=(\d{3})+(?!\d))/g,
+      ","
+    );
+
+  if (
+    !allowDecimal ||
+    decimalIndex < 0
+  ) {
+    return formattedInteger;
+  }
+
+  const decimalPart =
+    sanitized
+      .slice(
+        decimalIndex + 1
+      )
+      .replace(/\./g, "");
+
+  return `${formattedInteger}.${decimalPart}`;
+}
+
+function parseNumericInput(
+  value: string
+) {
+  return (
+    Number(
+      value.replace(/,/g, "")
+    ) || 0
+  );
+}
+
+function calculateRate(
+  selectedCurrency: CurrencyCode,
+  rateInput: string
+) {
+  if (
+    selectedCurrency === "KRW"
+  ) {
+    return 1;
+  }
+
+  const value =
+    parseNumericInput(
+      rateInput
+    );
+
+  if (!value) {
+    return 0;
+  }
+
+  if (
+    selectedCurrency === "JPY"
+  ) {
+    return value / 100;
+  }
+
+  return value;
+}
+
+function parseStoredNumber(
+  value: unknown
+) {
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  ) {
+    return value;
+  }
+
+  if (
+    typeof value === "string"
+  ) {
+    const parsed =
+      Number(
+        value.replace(/,/g, "")
+      );
+
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function hasExpenseSnapshot(
+  expense: Expense
+): expense is ExpenseWithSnapshot {
+  return (
+    typeof expense.exchangeRate ===
+      "number" &&
+    Number.isFinite(
+      expense.exchangeRate
+    ) &&
+    expense.exchangeRate > 0 &&
+    typeof expense.krwAmount ===
+      "number" &&
+    Number.isFinite(
+      expense.krwAmount
+    )
+  );
+}
+
+function migrateLegacyExpenseSnapshot(
+  expense: Expense,
+  rates: ExchangeRates
+): {
+  expense: ExpenseWithSnapshot;
+  migrated: boolean;
+} {
+  // 두 스냅샷 값이 이미 있으면 현재 환율로 다시 계산하지 않는다.
+  if (
+    hasExpenseSnapshot(
+      expense
+    )
+  ) {
+    return {
+      expense,
+      migrated: false,
+    };
+  }
+
+  const storedExchangeRate =
+    parseStoredNumber(
+      expense.exchangeRate
+    );
+
+  const storedKrwAmount =
+    parseStoredNumber(
+      expense.krwAmount
+    );
+
+  // 구형 JSON에 숫자가 문자열로 저장된 경우에도
+  // 기존 스냅샷 값을 현재 환율보다 우선한다.
+  if (
+    storedExchangeRate !== null &&
+    storedExchangeRate > 0 &&
+    storedKrwAmount !== null
+  ) {
+    return {
+      expense: {
+        ...expense,
+        exchangeRate:
+          storedExchangeRate,
+        krwAmount:
+          Math.round(
+            storedKrwAmount
+          ),
+      },
+      migrated: true,
+    };
+  }
+
+  let exchangeRate: number;
+
+  if (
+    storedExchangeRate !== null &&
+    storedExchangeRate > 0
+  ) {
+    exchangeRate =
+      storedExchangeRate;
+  } else if (
+    storedKrwAmount !== null &&
+    typeof expense.localAmount ===
+      "number" &&
+    Number.isFinite(
+      expense.localAmount
+    ) &&
+    expense.localAmount > 0
+  ) {
+    exchangeRate =
+      storedKrwAmount /
+      expense.localAmount;
+  } else {
+    exchangeRate =
+      expense.currency ===
+      "KRW"
+        ? 1
+        : rates[
+            expense.currency
+          ] ?? 1;
+  }
+
+  const krwAmount =
+    storedKrwAmount !== null
+      ? Math.round(
+          storedKrwAmount
+        )
+      : Math.round(
+          (
+            expense.localAmount ??
+            0
+          ) * exchangeRate
+        );
+
+  return {
+    expense: {
+      ...expense,
+      exchangeRate,
+      krwAmount,
+    },
+    migrated: true,
+  };
+}
+
+async function getExpensesWithSnapshots(
+  rates: ExchangeRates
+) {
+  const storedExpenses:
+    Expense[] =
+    await getExpenses();
+
+  const migrationResults =
+    storedExpenses.map(
+      (expense) =>
+        migrateLegacyExpenseSnapshot(
+          expense,
+          rates
+        )
+    );
+
+  const expenses =
+    migrationResults.map(
+      (result) =>
+        result.expense
+    );
+
+  if (
+    migrationResults.some(
+      (result) =>
+        result.migrated
+    )
+  ) {
+    await saveExpenses(
+      expenses
+    );
+  }
+
+  return expenses;
+}
+
 export default function ExpenseScreen() {
   const [trip, setTrip] =
     useState<Trip | null>(null);
 
   const [expenses, setExpenses] =
-    useState<Expense[]>([]);
+    useState<
+      ExpenseWithSnapshot[]
+    >([]);
 
   const [
     settlementPayments,
@@ -205,22 +497,18 @@ export default function ExpenseScreen() {
 
   function getRateDisplayValue(
     selectedCurrency: CurrencyCode,
-    rates: typeof defaultRates
+    rates: ExchangeRates
   ) {
-    if (
+    const rateValue =
       selectedCurrency === "JPY"
-    ) {
-      return String(
-        Math.round(
-          rates.JPY * 100
-        )
-      );
-    }
+        ? rates.JPY * 100
+        : rates[
+            selectedCurrency
+          ];
 
-    return String(
-      Math.round(
-        rates[selectedCurrency]
-      )
+    return formatNumericInput(
+      String(rateValue),
+      true
     );
   }
 
@@ -229,19 +517,29 @@ export default function ExpenseScreen() {
       const tripData =
         await getTrip();
 
-      const expenseData =
-        await getExpenses();
-
       const paymentData =
         await getSettlementPayments();
 
       const savedSettings =
         await getExpenseSettings();
 
+      const effectiveRates:
+        ExchangeRates = {
+          ...defaultRates,
+          ...(savedSettings
+            ?.exchangeRates ?? {}),
+        };
+
+      const normalizedExpenses:
+        ExpenseWithSnapshot[] =
+        await getExpensesWithSnapshots(
+          effectiveRates
+        );
+
       setTrip(tripData);
 
       setExpenses(
-        [...expenseData].sort(
+        [...normalizedExpenses].sort(
           (a, b) =>
             `${b.date}`.localeCompare(
               `${a.date}`
@@ -302,23 +600,29 @@ export default function ExpenseScreen() {
 
       if (savedSettings) {
         setBudget(
-          String(
-            savedSettings.budgetKrw ??
-              0
+          formatNumericInput(
+            String(
+              savedSettings.budgetKrw ??
+                0
+            )
           )
         );
 
         setCashBudget(
-          String(
-            savedSettings.cashBudgetKrw ??
-              0
+          formatNumericInput(
+            String(
+              savedSettings.cashBudgetKrw ??
+                0
+            )
           )
         );
 
         setCardBudget(
-          String(
-            savedSettings.cardBudgetKrw ??
-              0
+          formatNumericInput(
+            String(
+              savedSettings.cardBudgetKrw ??
+                0
+            )
           )
         );
 
@@ -327,13 +631,13 @@ export default function ExpenseScreen() {
         );
 
         setExchangeRates(
-          savedSettings.exchangeRates
+          effectiveRates
         );
 
         setRateInput(
           getRateDisplayValue(
             savedSettings.defaultCurrency,
-            savedSettings.exchangeRates
+            effectiveRates
           )
         );
       } else {
@@ -404,50 +708,20 @@ export default function ExpenseScreen() {
     return `${year}-${month}-${day}`;
   }
 
-  function calculateRate(
-    selectedCurrency: CurrencyCode
-  ) {
-    if (
-      selectedCurrency === "KRW"
-    ) {
-      return 1;
-    }
-
-    const value =
-      Number(
-        rateInput.replace(
-          /,/g,
-          ""
-        )
-      );
-
-    if (!value) {
-      return 0;
-    }
-
-    if (
-      selectedCurrency === "JPY"
-    ) {
-      return value / 100;
-    }
-
-    return value;
-  }
-
   const budgetNumber =
-    Number(
-      budget.replace(/,/g, "")
-    ) || 0;
+    parseNumericInput(
+      budget
+    );
 
   const cashBudgetNumber =
-    Number(
-      cashBudget.replace(/,/g, "")
-    ) || 0;
+    parseNumericInput(
+      cashBudget
+    );
 
   const cardBudgetNumber =
-    Number(
-      cardBudget.replace(/,/g, "")
-    ) || 0;
+    parseNumericInput(
+      cardBudget
+    );
 
   // 일반 여행 지출
   const totalExpenseKrw =
@@ -787,7 +1061,10 @@ export default function ExpenseScreen() {
 
   async function handleRateSave() {
     const calculatedRate =
-      calculateRate(currency);
+      calculateRate(
+        currency,
+        rateInput
+      );
 
     if (
       calculatedRate <= 0
@@ -800,40 +1077,67 @@ export default function ExpenseScreen() {
       return;
     }
 
-    const newRates = {
-      ...exchangeRates,
+    try {
+      // 환율을 바꾸기 전에 구형 기록을 이전 환율로 먼저 고정한다.
+      const frozenExpenses =
+        await getExpensesWithSnapshots(
+          exchangeRates
+        );
 
-      [currency]:
-        calculatedRate,
-    };
+      setExpenses(
+        [...frozenExpenses].sort(
+          (a, b) =>
+            `${b.date}`.localeCompare(
+              `${a.date}`
+            )
+        )
+      );
 
-    setExchangeRates(
-      newRates
-    );
+      const newRates = {
+        ...exchangeRates,
 
-    await saveSettings(
-      currency,
-      newRates
-    );
+        [currency]:
+          calculatedRate,
+      };
 
-    Alert.alert(
-      "완료",
-      "환율을 저장했습니다."
-    );
+      await saveSettings(
+        currency,
+        newRates
+      );
+
+      setExchangeRates(
+        newRates
+      );
+
+      Alert.alert(
+        "완료",
+        "환율을 저장했습니다."
+      );
+    } catch (error) {
+      console.error(
+        "환율 저장 실패:",
+        error
+      );
+
+      Alert.alert(
+        "환율 저장 실패",
+        "기존 지출 기록을 보존하지 못해 환율을 변경하지 않았습니다. 다시 시도해주세요."
+      );
+    }
   }
 
   const previewKrw =
     useMemo(() => {
       const localAmount =
-        Number(
-          amount.replace(
-            /,/g,
-            ""
-          )
+        parseNumericInput(
+          amount
         );
 
       const rate =
-        calculateRate(currency);
+        calculateRate(
+          currency,
+          rateInput
+        );
 
       if (
         !localAmount ||
@@ -861,11 +1165,8 @@ export default function ExpenseScreen() {
       }
 
       const localAmount =
-        Number(
-          amount.replace(
-            /,/g,
-            ""
-          )
+        parseNumericInput(
+          amount
         );
 
       if (
@@ -917,11 +1218,8 @@ export default function ExpenseScreen() {
 
   async function handleAddExpense() {
     const localAmount =
-      Number(
-        amount.replace(
-          /,/g,
-          ""
-        )
+      parseNumericInput(
+        amount
       );
 
     if (
@@ -937,7 +1235,10 @@ export default function ExpenseScreen() {
     }
 
     const rate =
-      calculateRate(currency);
+      calculateRate(
+        currency,
+        rateInput
+      );
 
     if (
       rate <= 0
@@ -982,7 +1283,8 @@ export default function ExpenseScreen() {
         localAmount * rate
       );
 
-    const newExpense: Expense =
+    const newExpense:
+      ExpenseWithSnapshot =
       {
         id:
           Date.now().toString(),
@@ -1087,7 +1389,7 @@ export default function ExpenseScreen() {
   }
 
   async function toggleLoanSettlement(
-    expense: Expense
+    expense: ExpenseWithSnapshot
   ) {
     if (
       expense.expenseType !==
@@ -1667,7 +1969,15 @@ export default function ExpenseScreen() {
 
         <TextInput
           value={budget}
-          onChangeText={setBudget}
+          onChangeText={(
+            value
+          ) =>
+            setBudget(
+              formatNumericInput(
+                value
+              )
+            )
+          }
           placeholder="예: 2000000"
           placeholderTextColor="#9CA3AF"
           keyboardType="numeric"
@@ -1693,8 +2003,14 @@ export default function ExpenseScreen() {
 
         <TextInput
           value={cashBudget}
-          onChangeText={
-            setCashBudget
+          onChangeText={(
+            value
+          ) =>
+            setCashBudget(
+              formatNumericInput(
+                value
+              )
+            )
           }
           placeholder="예: 200000"
           placeholderTextColor="#9CA3AF"
@@ -1721,8 +2037,14 @@ export default function ExpenseScreen() {
 
         <TextInput
           value={cardBudget}
-          onChangeText={
-            setCardBudget
+          onChangeText={(
+            value
+          ) =>
+            setCardBudget(
+              formatNumericInput(
+                value
+              )
+            )
           }
           placeholder="예: 1800000"
           placeholderTextColor="#9CA3AF"
@@ -2098,12 +2420,19 @@ export default function ExpenseScreen() {
 
             <TextInput
               value={rateInput}
-              onChangeText={
-                setRateInput
+              onChangeText={(
+                value
+              ) =>
+                setRateInput(
+                  formatNumericInput(
+                    value,
+                    true
+                  )
+                )
               }
               placeholder="환율"
               placeholderTextColor="#9CA3AF"
-              keyboardType="numeric"
+              keyboardType="decimal-pad"
               style={{
                 marginTop: 7,
                 backgroundColor:
@@ -2561,12 +2890,19 @@ export default function ExpenseScreen() {
 
         <TextInput
           value={amount}
-          onChangeText={
-            setAmount
+          onChangeText={(
+            value
+          ) =>
+            setAmount(
+              formatNumericInput(
+                value,
+                true
+              )
+            )
           }
           placeholder={`금액 (${currency})`}
           placeholderTextColor="#9CA3AF"
-          keyboardType="numeric"
+          keyboardType="decimal-pad"
           style={{
             marginTop: 18,
             backgroundColor:
@@ -2597,8 +2933,13 @@ export default function ExpenseScreen() {
               {currencySymbol(
                 currency
               )}
-              {formatMoney(
-                Number(amount)
+              {formatNumericInput(
+                String(
+                  parseNumericInput(
+                    amount
+                  )
+                ),
+                true
               )}{" "}
               ≈ ₩
               {formatMoney(
@@ -3105,8 +3446,11 @@ export default function ExpenseScreen() {
                 {currencySymbol(
                   expense.currency
                 )}
-                {formatMoney(
-                  expense.localAmount
+                {formatNumericInput(
+                  String(
+                    expense.localAmount
+                  ),
+                  true
                 )}
               </Text>
 
@@ -3116,10 +3460,28 @@ export default function ExpenseScreen() {
                   color: "#6B7280",
                 }}
               >
-                ≈ ₩
+                저장 당시 환산액: ₩
                 {formatMoney(
                   expense.krwAmount
                 )}
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 3,
+                  color: "#9CA3AF",
+                  fontSize: 12,
+                }}
+              >
+                적용 환율: 1{" "}
+                {expense.currency} ={" "}
+                {formatNumericInput(
+                  String(
+                    expense.exchangeRate
+                  ),
+                  true
+                )}{" "}
+                KRW
               </Text>
 
               {expense.memo?.trim() ? (
