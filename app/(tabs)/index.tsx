@@ -29,6 +29,10 @@ import {
 } from "../../services/schedule";
 
 import {
+  deleteServerTrip,
+} from "../../services/trip";
+
+import {
   fetchWeather,
   WeatherData,
 } from "../../services/weather";
@@ -268,6 +272,18 @@ export default function HomeScreen() {
       return;
     }
 
+    if (!trip.id) {
+      Alert.alert(
+        "삭제 실패",
+        "서버 여행 ID가 없어 여행을 삭제할 수 없습니다. 여행 정보를 다시 확인해주세요."
+      );
+
+      return;
+    }
+
+    const tripId =
+      trip.id;
+
     Alert.alert(
       "여행 삭제",
       `"${trip.tripName}"을 삭제할까요?\n저장된 일정도 함께 삭제됩니다.`,
@@ -284,28 +300,48 @@ export default function HomeScreen() {
 
           onPress:
             async () => {
-              await deleteTrip();
+              try {
+                // 서버에서 여행과 소속 일정을 먼저 삭제한다.
+                await deleteServerTrip(
+                  tripId
+                );
 
-              await saveSchedules(
-                []
-              );
+                // 서버 삭제 성공 후 기존 로컬 데이터도 정리한다.
+                await deleteTrip();
 
-              setTrip(
-                null
-              );
+                await saveSchedules(
+                  []
+                );
 
-              setTodaySchedules(
-                []
-              );
+                setTrip(
+                  null
+                );
 
-              setWeather(
-                null
-              );
+                setTodaySchedules(
+                  []
+                );
 
-              Alert.alert(
-                "완료",
-                "여행이 삭제되었습니다."
-              );
+                setWeather(
+                  null
+                );
+
+                Alert.alert(
+                  "완료",
+                  "여행과 저장된 일정이 삭제되었습니다."
+                );
+              } catch (error) {
+                console.error(
+                  "여행 삭제 실패:",
+                  error
+                );
+
+                Alert.alert(
+                  "삭제 실패",
+                  error instanceof Error
+                    ? error.message
+                    : "여행을 삭제하지 못했습니다. 서버와 네트워크 연결을 확인해주세요."
+                );
+              }
             },
         },
       ]

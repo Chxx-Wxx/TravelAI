@@ -163,6 +163,15 @@ export async function deleteServerTrip(
   const data =
     await response.json();
 
+  // 메모리 서버가 재시작되면 로컬에는 여행 ID가 남아 있지만
+  // 서버 여행은 이미 사라져 있을 수 있다.
+  // 삭제 요청의 최종 상태는 충족되었으므로 로컬 정리를 계속한다.
+  if (
+    response.status === 404
+  ) {
+    return data;
+  }
+
   if (!response.ok) {
     throw new Error(
       data.message ??
