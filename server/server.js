@@ -4,6 +4,11 @@ const dotenv = require("dotenv");
 
 dotenv.config();
 
+const {
+  pool,
+  query,
+} = require("./db");
+
 const app = express();
 
 app.use(cors());
@@ -278,523 +283,563 @@ app.post(
 );
 
 // ======================================================
-// 여행 API - 임시 메모리 저장
-// 서버를 껐다 켜면 여행 데이터는 사라짐
-// DB 연결 전 테스트용
+// 여행/일정 PostgreSQL helpers
 // ======================================================
 
-let trips = [];
+const TRIP_COLUMNS = `
+  id, trip_name, country, city,
+  start_date, end_date, people, members
+`;
 
-// 여행 저장
-app.post(
-  "/trips",
-  (req, res) => {
-    try {
-      const {
-        tripName,
-        country,
-        city,
+const SCHEDULE_COLUMNS = `
+  id, trip_id, title, location, address,
+  latitude, longitude, place_id, category,
+  duration_minutes, date, time, memo
+`;
+
+function toTrip(row) {
+  return {
+    id: row.id,
+    tripName: row.trip_name,
+    country: row.country,
+    city: row.city,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    people: row.people,
+    members: row.members,
+  };
+}
+
+function toSchedule(row) {
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    title: row.title,
+    location: row.location,
+    address: row.address,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    placeId: row.place_id,
+    category: row.category,
+    durationMinutes: row.duration_minutes,
+    date: row.date,
+    time: row.time,
+    memo: row.memo,
+  };
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(
+    object,
+    key
+  );
+}
+
+// ======================================================
+// 여행 API - PostgreSQL 영구 저장
+// ======================================================
+
+app.post("/trips", async (req, res) => {
+  try {
+    const {
+      tripName,
+      country,
+      city,
+      startDate,
+      endDate,
+      people,
+      members,
+    } = req.body;
+
+    if (
+      !tripName ||
+      !country ||
+      !city ||
+      !startDate ||
+      !endDate
+    ) {
+      return res.status(400).json({
+        message:
+          "여행 이름, 국가, 도시, 시작일, 종료일은 필수입니다.",
+      });
+    }
+
+    const result = await query(
+      `
+        INSERT INTO trips (
+          id, trip_name, country, city,
+          start_date, end_date, people, members
+        )
+        VALUES (
+          $1, $2, $3, $4,
+          $5, $6, $7, $8::jsonb
+        )
+        RETURNING ${TRIP_COLUMNS}
+      `,
+      [
+        Date.now().toString(),
+        String(tripName).trim(),
+        String(country).trim(),
+        String(city).trim(),
         startDate,
         endDate,
-        people,
-        members,
-      } = req.body;
-
-      if (
-        !tripName ||
-        !country ||
-        !city ||
-        !startDate ||
-        !endDate
-      ) {
-        return res
-          .status(400)
-          .json({
-            message:
-              "여행 이름, 국가, 도시, 시작일, 종료일은 필수입니다.",
-          });
-      }
-
-      const newTrip = {
-        id:
-          Date.now().toString(),
-
-        tripName:
-          String(
-            tripName
-          ).trim(),
-
-        country:
-          String(
-            country
-          ).trim(),
-
-        city:
-          String(
-            city
-          ).trim(),
-
-        startDate,
-
-        endDate,
-
-        people:
-          people ??
-          String(
-            members?.length ?? 1
-          ),
-
-        members:
+        people ??
+          String(members?.length ?? 1),
+        JSON.stringify(
           Array.isArray(members)
             ? members
-            : [],
-      };
-
-      trips.push(
-        newTrip
-      );
-
-      console.log(
-        "여행 저장 성공:",
-        newTrip
-      );
-
-      return res
-        .status(201)
-        .json({
-          message:
-            "여행이 저장되었습니다.",
-
-          trip:
-            newTrip,
-        });
-    } catch (error) {
-      console.error(
-        "여행 저장 오류:",
-        error
-      );
-
-      return res
-        .status(500)
-        .json({
-          message:
-            "여행 저장 중 서버 오류가 발생했습니다.",
-        });
-    }
-  }
-);
-
-// 여행 전체 조회
-app.get(
-  "/trips",
-  (req, res) => {
-    return res.json({
-      trips,
-    });
-  }
-);
-
-// 여행 하나 조회
-app.get(
-  "/trips/:id",
-  (req, res) => {
-    const trip =
-      trips.find(
-        (item) =>
-          item.id ===
-          req.params.id
-      );
-
-    if (!trip) {
-      return res
-        .status(404)
-        .json({
-          message:
-            "여행을 찾을 수 없습니다.",
-        });
-    }
-
-    return res.json({
-      trip,
-    });
-  }
-);
-
-// 여행 수정
-app.put(
-  "/trips/:id",
-  (req, res) => {
-    const index =
-      trips.findIndex(
-        (item) =>
-          item.id ===
-          req.params.id
-      );
-
-    if (index === -1) {
-      return res
-        .status(404)
-        .json({
-          message:
-            "여행을 찾을 수 없습니다.",
-        });
-    }
-
-    trips[index] = {
-      ...trips[index],
-      ...req.body,
-
-      // 여행 ID는 수정되지 않게 유지
-      id:
-        trips[index].id,
-    };
-
-    console.log(
-      "여행 수정 성공:",
-      trips[index]
+            : []
+        ),
+      ]
     );
 
-    return res.json({
-      message:
-        "여행이 수정되었습니다.",
+    const newTrip = toTrip(result.rows[0]);
 
-      trip:
-        trips[index],
+    console.log("여행 저장 성공:", newTrip);
+
+    return res.status(201).json({
+      message: "여행이 저장되었습니다.",
+      trip: newTrip,
+    });
+  } catch (error) {
+    console.error("여행 저장 오류:", error);
+
+    return res.status(500).json({
+      message:
+        "여행 저장 중 서버 오류가 발생했습니다.",
     });
   }
-);
+});
 
-// 여행 삭제
-app.delete(
-  "/trips/:id",
-  (req, res) => {
-    const exists =
-      trips.some(
-        (item) =>
-          item.id ===
-          req.params.id
-      );
+app.get("/trips", async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT ${TRIP_COLUMNS}
+      FROM trips
+      ORDER BY created_at ASC
+    `);
 
-    if (!exists) {
-      return res
-        .status(404)
-        .json({
-          message:
-            "여행을 찾을 수 없습니다.",
-        });
+    return res.json({
+      trips: result.rows.map(toTrip),
+    });
+  } catch (error) {
+    console.error("여행 조회 오류:", error);
+
+    return res.status(500).json({
+      message:
+        "여행 조회 중 서버 오류가 발생했습니다.",
+    });
+  }
+});
+
+app.get("/trips/:id", async (req, res) => {
+  try {
+    const result = await query(
+      `
+        SELECT ${TRIP_COLUMNS}
+        FROM trips
+        WHERE id = $1
+      `,
+      [req.params.id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        message: "여행을 찾을 수 없습니다.",
+      });
     }
 
-    trips =
-      trips.filter(
-        (item) =>
-          item.id !==
-          req.params.id
-      );
-
-    // 해당 여행의 일정도 함께 제거
-    schedules =
-      schedules.filter(
-        (schedule) =>
-          schedule.tripId !==
-          req.params.id
-      );
-
     return res.json({
+      trip: toTrip(result.rows[0]),
+    });
+  } catch (error) {
+    console.error("여행 조회 오류:", error);
+
+    return res.status(500).json({
       message:
-        "여행이 삭제되었습니다.",
+        "여행 조회 중 서버 오류가 발생했습니다.",
     });
   }
-);
+});
 
-// ======================================================
-// 일정 API - 임시 메모리 저장
-// tripId를 이용해 여행별로 일정 구분
-// 서버를 껐다 켜면 일정 데이터는 사라짐
-// DB 연결 전 테스트용
-// ======================================================
+app.put("/trips/:id", async (req, res) => {
+  try {
+    const fieldMap = [
+      ["tripName", "trip_name"],
+      ["country", "country"],
+      ["city", "city"],
+      ["startDate", "start_date"],
+      ["endDate", "end_date"],
+      ["people", "people"],
+      ["members", "members"],
+    ];
 
-let schedules = [];
+    const assignments = [];
+    const values = [];
 
-// 일정 저장
-app.post(
-  "/schedules",
-  (req, res) => {
-    try {
-      const {
-        tripId,
-        title,
-        location,
-        address,
-        latitude,
-        longitude,
-        placeId,
-        category,
-        durationMinutes,
-        date,
-        time,
-        memo,
-      } = req.body;
-
-      if (
-        !tripId ||
-        !title ||
-        !location ||
-        !date ||
-        !time
-      ) {
-        return res
-          .status(400)
-          .json({
-            message:
-              "여행 ID, 일정 이름, 장소, 날짜, 시간은 필수입니다.",
-          });
+    for (const [apiField, column] of fieldMap) {
+      if (!hasOwn(req.body, apiField)) {
+        continue;
       }
 
-      // 실제 존재하는 여행인지 확인
-      const tripExists =
-        trips.some(
-          (trip) =>
-            trip.id === tripId
+      let value = req.body[apiField];
+
+      if (apiField === "members") {
+        value = JSON.stringify(
+          Array.isArray(value) ? value : []
+        );
+      }
+
+      values.push(value);
+      assignments.push(
+        apiField === "members"
+          ? `${column} = $${values.length}::jsonb`
+          : `${column} = $${values.length}`
+      );
+    }
+
+    values.push(req.params.id);
+
+    const result = assignments.length > 0
+      ? await query(
+          `
+            UPDATE trips
+            SET ${assignments.join(", ")}
+            WHERE id = $${values.length}
+            RETURNING ${TRIP_COLUMNS}
+          `,
+          values
+        )
+      : await query(
+          `
+            SELECT ${TRIP_COLUMNS}
+            FROM trips
+            WHERE id = $1
+          `,
+          [req.params.id]
         );
 
-      if (!tripExists) {
-        return res
-          .status(404)
-          .json({
-            message:
-              "해당 여행을 찾을 수 없습니다.",
-          });
-      }
-
-      const newSchedule = {
-        id:
-          Date.now().toString(),
-
-        // 이 일정이 어느 여행 소속인지 저장
-        tripId,
-
-        title:
-          String(
-            title
-          ).trim(),
-
-        location:
-          String(
-            location
-          ).trim(),
-
-        address:
-          address ?? "",
-
-        latitude:
-          latitude ?? null,
-
-        longitude:
-          longitude ?? null,
-
-        placeId:
-          placeId ?? null,
-
-        category:
-          category ?? "기타",
-
-        durationMinutes:
-          durationMinutes ?? 60,
-
-        date,
-
-        time,
-
-        memo:
-          memo ?? "",
-      };
-
-      schedules.push(
-        newSchedule
-      );
-
-      console.log(
-        "일정 저장 성공:",
-        newSchedule
-      );
-
-      return res
-        .status(201)
-        .json({
-          message:
-            "일정이 저장되었습니다.",
-
-          schedule:
-            newSchedule,
-        });
-    } catch (error) {
-      console.error(
-        "일정 저장 오류:",
-        error
-      );
-
-      return res
-        .status(500)
-        .json({
-          message:
-            "일정 저장 중 서버 오류가 발생했습니다.",
-        });
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        message: "여행을 찾을 수 없습니다.",
+      });
     }
-  }
-);
 
-// 일정 전체 조회
-// tripId가 있으면 해당 여행의 일정만 반환
-// 예: GET /schedules?tripId=123
-app.get(
-  "/schedules",
-  (req, res) => {
+    const updatedTrip = toTrip(result.rows[0]);
+
+    console.log("여행 수정 성공:", updatedTrip);
+
+    return res.json({
+      message: "여행이 수정되었습니다.",
+      trip: updatedTrip,
+    });
+  } catch (error) {
+    console.error("여행 수정 오류:", error);
+
+    return res.status(500).json({
+      message:
+        "여행 수정 중 서버 오류가 발생했습니다.",
+    });
+  }
+});
+
+app.delete("/trips/:id", async (req, res) => {
+  try {
+    const result = await query(
+      `
+        DELETE FROM trips
+        WHERE id = $1
+        RETURNING id
+      `,
+      [req.params.id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        message: "여행을 찾을 수 없습니다.",
+      });
+    }
+
+    return res.json({
+      message: "여행이 삭제되었습니다.",
+    });
+  } catch (error) {
+    console.error("여행 삭제 오류:", error);
+
+    return res.status(500).json({
+      message:
+        "여행 삭제 중 서버 오류가 발생했습니다.",
+    });
+  }
+});
+
+// ======================================================
+// 일정 API - PostgreSQL 영구 저장
+// ======================================================
+
+app.post("/schedules", async (req, res) => {
+  try {
     const {
       tripId,
-    } = req.query;
+      title,
+      location,
+      address,
+      latitude,
+      longitude,
+      placeId,
+      category,
+      durationMinutes,
+      date,
+      time,
+      memo,
+    } = req.body;
 
-    let result =
-      [...schedules];
-
-    if (tripId) {
-      result =
-        result.filter(
-          (schedule) =>
-            schedule.tripId ===
-            tripId
-        );
+    if (
+      !tripId ||
+      !title ||
+      !location ||
+      !date ||
+      !time
+    ) {
+      return res.status(400).json({
+        message:
+          "여행 ID, 일정 이름, 장소, 날짜, 시간은 필수입니다.",
+      });
     }
 
-    result.sort(
-      (a, b) => {
-        const first =
-          `${a.date} ${a.time}`;
-
-        const second =
-          `${b.date} ${b.time}`;
-
-        return first.localeCompare(
-          second
-        );
-      }
+    const result = await query(
+      `
+        INSERT INTO schedules (
+          id, trip_id, title, location, address,
+          latitude, longitude, place_id, category,
+          duration_minutes, date, time, memo
+        )
+        VALUES (
+          $1, $2, $3, $4, $5,
+          $6, $7, $8, $9, $10,
+          $11, $12, $13
+        )
+        RETURNING ${SCHEDULE_COLUMNS}
+      `,
+      [
+        Date.now().toString(),
+        tripId,
+        String(title).trim(),
+        String(location).trim(),
+        address ?? "",
+        latitude ?? null,
+        longitude ?? null,
+        placeId ?? null,
+        category ?? "기타",
+        durationMinutes ?? 60,
+        date,
+        time,
+        memo ?? "",
+      ]
     );
 
-    return res.json({
-      schedules:
-        result,
+    const newSchedule = toSchedule(
+      result.rows[0]
+    );
+
+    console.log(
+      "일정 저장 성공:",
+      newSchedule
+    );
+
+    return res.status(201).json({
+      message: "일정이 저장되었습니다.",
+      schedule: newSchedule,
+    });
+  } catch (error) {
+    if (error.code === "23503") {
+      return res.status(404).json({
+        message:
+          "해당 여행을 찾을 수 없습니다.",
+      });
+    }
+
+    console.error("일정 저장 오류:", error);
+
+    return res.status(500).json({
+      message:
+        "일정 저장 중 서버 오류가 발생했습니다.",
     });
   }
-);
+});
 
-// 일정 하나 조회
-app.get(
-  "/schedules/:id",
-  (req, res) => {
-    const schedule =
-      schedules.find(
-        (item) =>
-          item.id ===
-          req.params.id
-      );
+app.get("/schedules", async (req, res) => {
+  try {
+    const { tripId } = req.query;
 
-    if (!schedule) {
-      return res
-        .status(404)
-        .json({
-          message:
-            "일정을 찾을 수 없습니다.",
-        });
+    const result = tripId
+      ? await query(
+          `
+            SELECT ${SCHEDULE_COLUMNS}
+            FROM schedules
+            WHERE trip_id = $1
+            ORDER BY date ASC, time ASC
+          `,
+          [tripId]
+        )
+      : await query(`
+          SELECT ${SCHEDULE_COLUMNS}
+          FROM schedules
+          ORDER BY date ASC, time ASC
+        `);
+
+    return res.json({
+      schedules: result.rows.map(toSchedule),
+    });
+  } catch (error) {
+    console.error("일정 조회 오류:", error);
+
+    return res.status(500).json({
+      message:
+        "일정 조회 중 서버 오류가 발생했습니다.",
+    });
+  }
+});
+
+app.get("/schedules/:id", async (req, res) => {
+  try {
+    const result = await query(
+      `
+        SELECT ${SCHEDULE_COLUMNS}
+        FROM schedules
+        WHERE id = $1
+      `,
+      [req.params.id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        message: "일정을 찾을 수 없습니다.",
+      });
     }
 
     return res.json({
-      schedule,
+      schedule: toSchedule(result.rows[0]),
+    });
+  } catch (error) {
+    console.error("일정 조회 오류:", error);
+
+    return res.status(500).json({
+      message:
+        "일정 조회 중 서버 오류가 발생했습니다.",
     });
   }
-);
+});
 
-// 일정 수정
-app.put(
-  "/schedules/:id",
-  (req, res) => {
-    const index =
-      schedules.findIndex(
-        (item) =>
-          item.id ===
-          req.params.id
+app.put("/schedules/:id", async (req, res) => {
+  try {
+    const fieldMap = [
+      ["title", "title"],
+      ["location", "location"],
+      ["address", "address"],
+      ["latitude", "latitude"],
+      ["longitude", "longitude"],
+      ["placeId", "place_id"],
+      ["category", "category"],
+      ["durationMinutes", "duration_minutes"],
+      ["date", "date"],
+      ["time", "time"],
+      ["memo", "memo"],
+    ];
+
+    const assignments = [];
+    const values = [];
+
+    for (const [apiField, column] of fieldMap) {
+      if (!hasOwn(req.body, apiField)) {
+        continue;
+      }
+
+      values.push(req.body[apiField]);
+      assignments.push(
+        `${column} = $${values.length}`
       );
-
-    if (index === -1) {
-      return res
-        .status(404)
-        .json({
-          message:
-            "일정을 찾을 수 없습니다.",
-        });
     }
 
-    schedules[index] = {
-      ...schedules[index],
-      ...req.body,
+    values.push(req.params.id);
 
-      // 일정 ID는 수정되지 않게 유지
-      id:
-        schedules[index].id,
+    const result = assignments.length > 0
+      ? await query(
+          `
+            UPDATE schedules
+            SET ${assignments.join(", ")}
+            WHERE id = $${values.length}
+            RETURNING ${SCHEDULE_COLUMNS}
+          `,
+          values
+        )
+      : await query(
+          `
+            SELECT ${SCHEDULE_COLUMNS}
+            FROM schedules
+            WHERE id = $1
+          `,
+          [req.params.id]
+        );
 
-      // 일정이 속한 여행도
-      // 수정 요청으로 바뀌지 않게 유지
-      tripId:
-        schedules[index]
-          .tripId,
-    };
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        message: "일정을 찾을 수 없습니다.",
+      });
+    }
+
+    const updatedSchedule = toSchedule(
+      result.rows[0]
+    );
 
     console.log(
       "일정 수정 성공:",
-      schedules[index]
+      updatedSchedule
     );
 
     return res.json({
-      message:
-        "일정이 수정되었습니다.",
+      message: "일정이 수정되었습니다.",
+      schedule: updatedSchedule,
+    });
+  } catch (error) {
+    console.error("일정 수정 오류:", error);
 
-      schedule:
-        schedules[index],
+    return res.status(500).json({
+      message:
+        "일정 수정 중 서버 오류가 발생했습니다.",
     });
   }
-);
+});
 
-// 일정 삭제
-app.delete(
-  "/schedules/:id",
-  (req, res) => {
-    const exists =
-      schedules.some(
-        (item) =>
-          item.id ===
-          req.params.id
-      );
+app.delete("/schedules/:id", async (req, res) => {
+  try {
+    const result = await query(
+      `
+        DELETE FROM schedules
+        WHERE id = $1
+        RETURNING id
+      `,
+      [req.params.id]
+    );
 
-    if (!exists) {
-      return res
-        .status(404)
-        .json({
-          message:
-            "일정을 찾을 수 없습니다.",
-        });
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        message: "일정을 찾을 수 없습니다.",
+      });
     }
 
-    schedules =
-      schedules.filter(
-        (item) =>
-          item.id !==
-          req.params.id
-      );
-
     return res.json({
+      message: "일정이 삭제되었습니다.",
+    });
+  } catch (error) {
+    console.error("일정 삭제 오류:", error);
+
+    return res.status(500).json({
       message:
-        "일정이 삭제되었습니다.",
+        "일정 삭제 중 서버 오류가 발생했습니다.",
     });
   }
-);
+});
 
 // ======================================================
 // 서버 시작
@@ -804,11 +849,22 @@ const port =
   process.env.PORT ||
   4000;
 
-app.listen(
-  port,
-  () => {
+async function startServer() {
+  await query("SELECT 1");
+
+  app.listen(port, () => {
     console.log(
       `TravelAI server running on port ${port}`
     );
-  }
-);
+  });
+}
+
+startServer().catch(async (error) => {
+  console.error(
+    "TravelAI server 시작 실패:",
+    error
+  );
+
+  await pool.end().catch(() => {});
+  process.exitCode = 1;
+});
