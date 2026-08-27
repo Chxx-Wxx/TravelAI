@@ -20,16 +20,21 @@ import AppButton from "../../components/AppButton";
 import AppInput from "../../components/AppInput";
 
 import {
+  saveCurrentMemberId,
   saveTrip,
 } from "../../lib/storage";
+
+import {
+  findOwnerMember,
+} from "../../lib/trip-member";
 
 import {
   createTrip,
 } from "../../services/trip";
 
 import {
+  LegacyTripMember,
   Trip,
-  TripMember,
 } from "../../types";
 
 export default function CreateTripScreen() {
@@ -95,7 +100,7 @@ export default function CreateTripScreen() {
   ] =
     useState<string[]>(
       [
-        "나",
+        "",
         "친구 1",
       ]
     );
@@ -310,34 +315,10 @@ export default function CreateTripScreen() {
       return;
     }
 
-    const duplicated =
-      new Set(
-        memberNames.map(
-          (name) =>
-            name.trim()
-        )
-      ).size !==
-      memberNames.length;
-
-    if (duplicated) {
-      Alert.alert(
-        "동행자 확인",
-        "같은 이름이 중복되어 있습니다."
-      );
-
-      return;
-    }
-
     const members:
-      TripMember[] =
+      LegacyTripMember[] =
         memberNames.map(
-          (
-            name,
-            index
-          ) => ({
-            id:
-              `member-${Date.now()}-${index}`,
-
+          (name) => ({
             name:
               name.trim(),
           })
@@ -381,6 +362,17 @@ export default function CreateTripScreen() {
       await saveTrip(
         savedTrip
       );
+
+      const owner = findOwnerMember(
+        savedTrip.tripMembers
+      );
+
+      if (savedTrip.id && owner) {
+        await saveCurrentMemberId(
+          savedTrip.id,
+          owner.id
+        );
+      }
 
       Alert.alert(
         "완료",

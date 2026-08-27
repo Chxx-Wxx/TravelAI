@@ -1,8 +1,15 @@
 import {
+  deleteCurrentMemberId,
   deleteTrip,
+  getCurrentMemberId,
   getTrip,
+  saveCurrentMemberId,
   saveTrip,
 } from "../lib/storage";
+
+import {
+  findOwnerMember,
+} from "../lib/trip-member";
 
 import type {
   Trip,
@@ -11,9 +18,45 @@ import type {
 import {
   deleteServerTrip,
   ensureServerTrip,
+  fetchTripMembers,
 } from "./trip";
 
 let localTripRevision = 0;
+
+async function ensureStoredCurrentMember(
+  trip: Trip
+) {
+  if (!trip.id) {
+    return;
+  }
+
+  const storedMemberId =
+    await getCurrentMemberId(trip.id);
+
+  if (storedMemberId) {
+    return;
+  }
+
+  try {
+    const members = trip.tripMembers?.length
+      ? trip.tripMembers
+      : await fetchTripMembers(trip.id);
+    const owner = findOwnerMember(members);
+
+    if (owner) {
+      await saveCurrentMemberId(
+        trip.id,
+        owner.id
+      );
+    }
+  } catch (error) {
+    // A member lookup failure must not make the current trip unusable.
+    console.error(
+      "현재 여행 멤버 확인 실패:",
+      error
+    );
+  }
+}
 
 async function removeUnusedRecoveredTrip(
   tripId: string
@@ -61,6 +104,9 @@ export async function getCurrentTripWithRecovery(): Promise<Trip | null> {
   }
 
   if (!result.recovered) {
+    await ensureStoredCurrentMember(
+      localTrip
+    );
     return localTrip;
   }
 
@@ -89,7 +135,18 @@ export async function getCurrentTripWithRecovery(): Promise<Trip | null> {
     return latestLocalTrip;
   }
 
-  await saveTrip(
+  await saveTrip(result.trip);
+
+  if (
+    result.trip.id &&
+    result.trip.id !== sourceTripId
+  ) {
+    await deleteCurrentMemberId(
+      sourceTripId
+    );
+  }
+
+  await ensureStoredCurrentMember(
     result.trip
   );
 

@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const { randomUUID } = require("crypto");
 
 dotenv.config();
 
@@ -333,6 +334,11 @@ const SCHEDULE_COLUMNS = `
   duration_minutes, date, time, memo
 `;
 
+const TRIP_MEMBER_COLUMNS = `
+  id, trip_id, user_id, display_name,
+  role, status, created_at, joined_at
+`;
+
 function toTrip(row) {
   return {
     id: row.id,
@@ -364,6 +370,86 @@ function toSchedule(row) {
   };
 }
 
+function toTripMember(row) {
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    userId: row.user_id,
+    displayName: row.display_name,
+    role: row.role,
+    status: row.status,
+    createdAt: row.created_at,
+    joinedAt: row.joined_at,
+  };
+}
+
+function normalizeTripMembers(members, tripId) {
+  const sourceMembers = Array.isArray(members)
+    ? members
+    : [];
+
+  const normalizedMembers = sourceMembers
+    .map((member) => ({
+      displayName: String(
+        member?.displayName ?? member?.name ?? ""
+      ).trim(),
+    }))
+    .filter((member) => member.displayName);
+
+  if (normalizedMembers.length === 0) {
+    normalizedMembers.push({
+      displayName: "여행 만든 사람",
+    });
+  }
+
+  return normalizedMembers.map((member, index) => {
+    const id = randomUUID();
+
+    return {
+      id,
+      tripId,
+      userId: null,
+      displayName: member.displayName,
+      role: index === 0 ? "owner" : "member",
+      status: "placeholder",
+      createdAt: new Date().toISOString(),
+      joinedAt: null,
+      legacyMemberId: id,
+    };
+  });
+}
+
+function toLegacyMembers(members) {
+  return members.map((member) => ({
+    id: member.id,
+    name: member.displayName,
+  }));
+}
+
+async function insertTripMembers(client, members) {
+  for (const member of members) {
+    await client.query(
+      `
+        INSERT INTO trip_members (
+          id, trip_id, user_id, legacy_member_id,
+          display_name, role, status, joined_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `,
+      [
+        member.id,
+        member.tripId,
+        member.userId,
+        member.legacyMemberId,
+        member.displayName,
+        member.role,
+        member.status,
+        member.joinedAt,
+      ]
+    );
+  }
+}
+
 function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(
     object,
@@ -373,6 +459,7 @@ function hasOwn(object, key) {
 
 let trips = [];
 let schedules = [];
+let tripMembers = [];
 
 // ======================================================
 // 여행 API - PostgreSQL 또는 메모리 저장
@@ -403,8 +490,13 @@ app.post("/trips", async (req, res) => {
       });
     }
 
+    const tripId = Date.now().toString();
+    const newTripMembers = normalizeTripMembers(
+      members,
+      tripId
+    );
     const newTrip = {
-      id: Date.now().toString(),
+      id: tripId,
       tripName: String(tripName).trim(),
       country: String(country).trim(),
       city: String(city).trim(),
@@ -412,37 +504,65 @@ app.post("/trips", async (req, res) => {
       endDate,
       people:
         people ?? String(members?.length ?? 1),
-      members: Array.isArray(members) ? members : [],
+      members: toLegacyMembers(newTripMembers),
+      tripMembers: newTripMembers.map((member) => ({
+        id: member.id,
+        tripId: member.tripId,
+        userId: member.userId,
+        displayName: member.displayName,
+        role: member.role,
+        status: member.status,
+        createdAt: member.createdAt,
+        joinedAt: member.joinedAt,
+      })),
     };
 
     if (hasDatabaseUrl) {
-      const result = await query(
-        `
-          INSERT INTO trips (
-            id, trip_name, country, city,
-            start_date, end_date, people, members
-          )
-          VALUES (
-            $1, $2, $3, $4,
-            $5, $6, $7, $8::jsonb
-          )
-          RETURNING ${TRIP_COLUMNS}
-        `,
-        [
-          newTrip.id,
-          newTrip.tripName,
-          newTrip.country,
-          newTrip.city,
-          newTrip.startDate,
-          newTrip.endDate,
-          newTrip.people,
-          JSON.stringify(newTrip.members),
-        ]
-      );
+      const client = await pool.connect();
 
-      Object.assign(newTrip, toTrip(result.rows[0]));
+      try {
+        await client.query("BEGIN");
+
+        const result = await client.query(
+          `
+            INSERT INTO trips (
+              id, trip_name, country, city,
+              start_date, end_date, people, members
+            )
+            VALUES (
+              $1, $2, $3, $4,
+              $5, $6, $7, $8::jsonb
+            )
+            RETURNING ${TRIP_COLUMNS}
+          `,
+          [
+            newTrip.id,
+            newTrip.tripName,
+            newTrip.country,
+            newTrip.city,
+            newTrip.startDate,
+            newTrip.endDate,
+            newTrip.people,
+            JSON.stringify(newTrip.members),
+          ]
+        );
+
+        await insertTripMembers(
+          client,
+          newTripMembers
+        );
+        await client.query("COMMIT");
+
+        Object.assign(newTrip, toTrip(result.rows[0]));
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     } else {
       trips.push(newTrip);
+      tripMembers.push(...newTripMembers);
     }
 
     console.log("여행 저장 성공:", newTrip);
@@ -486,6 +606,62 @@ app.get("/trips", async (req, res) => {
   }
 });
 
+app.get("/trips/:id/members", async (req, res) => {
+  try {
+    if (!hasDatabaseUrl) {
+      const tripExists = trips.some(
+        (trip) => trip.id === req.params.id
+      );
+
+      if (!tripExists) {
+        return res.status(404).json({
+          message: "여행을 찾을 수 없습니다.",
+        });
+      }
+
+      return res.json({
+        members: tripMembers
+          .filter((member) => member.tripId === req.params.id)
+          .map(({ legacyMemberId, ...member }) => member),
+      });
+    }
+
+    const tripResult = await query(
+      "SELECT id FROM trips WHERE id = $1",
+      [req.params.id]
+    );
+
+    if (tripResult.rowCount === 0) {
+      return res.status(404).json({
+        message: "여행을 찾을 수 없습니다.",
+      });
+    }
+
+    const result = await query(
+      `
+        SELECT ${TRIP_MEMBER_COLUMNS}
+        FROM trip_members
+        WHERE trip_id = $1
+        ORDER BY
+          CASE WHEN role = 'owner' THEN 0 ELSE 1 END,
+          created_at ASC,
+          id ASC
+      `,
+      [req.params.id]
+    );
+
+    return res.json({
+      members: result.rows.map(toTripMember),
+    });
+  } catch (error) {
+    console.error("여행 멤버 조회 오류:", error);
+
+    return res.status(500).json({
+      message: "여행 멤버 조회 중 서버 오류가 발생했습니다.",
+    });
+  }
+});
+
 app.get("/trips/:id", async (req, res) => {
   try {
     if (!hasDatabaseUrl) {
@@ -499,7 +675,14 @@ app.get("/trips/:id", async (req, res) => {
         });
       }
 
-      return res.json({ trip });
+      return res.json({
+        trip: {
+          ...trip,
+          tripMembers: tripMembers
+            .filter((member) => member.tripId === trip.id)
+            .map(({ legacyMemberId, ...member }) => member),
+        },
+      });
     }
 
     const result = await query(
@@ -517,8 +700,24 @@ app.get("/trips/:id", async (req, res) => {
       });
     }
 
+    const memberResult = await query(
+      `
+        SELECT ${TRIP_MEMBER_COLUMNS}
+        FROM trip_members
+        WHERE trip_id = $1
+        ORDER BY
+          CASE WHEN role = 'owner' THEN 0 ELSE 1 END,
+          created_at ASC,
+          id ASC
+      `,
+      [req.params.id]
+    );
+
     return res.json({
-      trip: toTrip(result.rows[0]),
+      trip: {
+        ...toTrip(result.rows[0]),
+        tripMembers: memberResult.rows.map(toTripMember),
+      },
     });
   } catch (error) {
     console.error("여행 조회 오류:", error);
@@ -652,6 +851,9 @@ app.delete("/trips/:id", async (req, res) => {
       );
       schedules = schedules.filter(
         (schedule) => schedule.tripId !== req.params.id
+      );
+      tripMembers = tripMembers.filter(
+        (member) => member.tripId !== req.params.id
       );
 
       return res.json({

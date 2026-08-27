@@ -70,9 +70,6 @@ export function usePlaceAutocomplete({
     }
 
     const promise = (async () => {
-      const deviceLocation = await getDeviceSearchLocation();
-      if (deviceLocation) return deviceLocation;
-
       if (
         existingLocation &&
         hasValidScheduleLocation(existingLocation)
@@ -117,6 +114,13 @@ export function usePlaceAutocomplete({
         } catch {
           // 일정 조회 실패 시 도시 기준 또는 bias 없이 계속 검색한다.
         }
+      }
+
+      const deviceLocation =
+        await getDeviceSearchLocation();
+
+      if (deviceLocation) {
+        return deviceLocation;
       }
 
       if (trip.city) {

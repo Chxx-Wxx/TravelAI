@@ -1,5 +1,6 @@
 import type {
   Trip,
+  TripMember,
 } from "../types";
 
 const API_URL =
@@ -14,7 +15,7 @@ export type CreateTripInput = {
   people: string;
 
   members?: {
-    id: string;
+    id?: string;
     name: string;
   }[];
 };
@@ -212,6 +213,52 @@ export async function fetchTrip(
   }
 
   return data.trip;
+}
+
+export async function fetchTripMembers(
+  tripId: string
+): Promise<TripMember[]> {
+  const apiUrl = requireApiUrl();
+  const response = await fetch(
+    `${apiUrl}/trips/${tripId}/members`
+  );
+  const contentType =
+    response.headers.get("content-type") ?? "";
+  const isJson = contentType
+    .toLowerCase()
+    .includes("application/json");
+
+  if (!response.ok) {
+    if (!isJson) {
+      throw new Error(
+        `여행 멤버 API가 JSON이 아닌 응답을 반환했습니다. ` +
+          `(HTTP ${response.status}) 서버 재시작과 EXPO_PUBLIC_API_URL을 확인해주세요.`
+      );
+    }
+
+    const errorData = await response.json();
+
+    if (response.status === 404) {
+      throw new TripNotFoundError(
+        errorData.message
+      );
+    }
+
+    throw new Error(
+      errorData.message ??
+        "여행 멤버 조회에 실패했습니다."
+    );
+  }
+
+  if (!isJson) {
+    throw new Error(
+      "여행 멤버 API가 JSON이 아닌 응답을 반환했습니다. 서버 연결을 확인해주세요."
+    );
+  }
+
+  const data = await response.json();
+
+  return data.members ?? [];
 }
 
 // 여행 수정

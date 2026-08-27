@@ -1,6 +1,24 @@
+export interface LegacyTripMember {
+  id?: string;
+  name: string;
+}
+
+export type TripMemberRole = "owner" | "member";
+
+export type TripMemberStatus =
+  | "placeholder"
+  | "active"
+  | "removed";
+
 export interface TripMember {
   id: string;
-  name: string;
+  tripId: string;
+  userId: string | null;
+  displayName: string;
+  role: TripMemberRole;
+  status: TripMemberStatus;
+  createdAt?: string;
+  joinedAt?: string | null;
 }
 
 export interface Trip {
@@ -11,7 +29,8 @@ export interface Trip {
   startDate: string;
   endDate: string;
   people: string;
-  members?: TripMember[];
+  members?: LegacyTripMember[];
+  tripMembers?: TripMember[];
 }
 
 export type ScheduleCategory =

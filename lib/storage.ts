@@ -5,6 +5,63 @@ const SCHEDULE_KEY = "@travelai_schedule";
 const EXPENSE_KEY = "@travelai_expenses";
 const EXPENSE_SETTINGS_KEY = "@travelai_expense_settings";
 const PACKING_KEY = "@travelai_packing_items";
+const CURRENT_MEMBER_IDS_KEY =
+  "@travelai_current_member_ids";
+
+async function getCurrentMemberIds(): Promise<Record<string, string>> {
+  const data = await AsyncStorage.getItem(
+    CURRENT_MEMBER_IDS_KEY
+  );
+
+  if (!data) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(data);
+    return parsed && typeof parsed === "object"
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function getCurrentMemberId(
+  tripId: string
+) {
+  const ids = await getCurrentMemberIds();
+  return ids[tripId] ?? null;
+}
+
+export async function saveCurrentMemberId(
+  tripId: string,
+  memberId: string
+) {
+  const ids = await getCurrentMemberIds();
+  ids[tripId] = memberId;
+
+  await AsyncStorage.setItem(
+    CURRENT_MEMBER_IDS_KEY,
+    JSON.stringify(ids)
+  );
+}
+
+export async function deleteCurrentMemberId(
+  tripId: string
+) {
+  const ids = await getCurrentMemberIds();
+
+  if (!(tripId in ids)) {
+    return;
+  }
+
+  delete ids[tripId];
+  await AsyncStorage.setItem(
+    CURRENT_MEMBER_IDS_KEY,
+    JSON.stringify(ids)
+  );
+}
 
 // 여행
 export async function saveTrip(trip: any) {
@@ -24,7 +81,12 @@ export async function getTrip() {
 }
 
 export async function deleteTrip() {
+  const trip = await getTrip();
   await AsyncStorage.removeItem(TRIP_KEY);
+
+  if (trip?.id) {
+    await deleteCurrentMemberId(trip.id);
+  }
 }
 
 // 일정
