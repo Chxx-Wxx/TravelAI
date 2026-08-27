@@ -187,15 +187,20 @@ EXPO_PUBLIC_API_URL=https://xxxxx.ngrok-free.dev
 
 `server/.env`
 
-에서 Google API 키를 읽는다.
+에서 Google API 키와 PostgreSQL 연결 정보를 읽는다.
 
 사용 변수:
 
 ```env
 GOOGLE_MAPS_API_KEY=...
+DATABASE_URL=...
 ```
 
-실제 API 키는 GitHub에 올리지 않는다.
+`DATABASE_URL`이 설정되어 있으면 Neon PostgreSQL을 사용하고,
+없으면 로컬 개발을 위한 In-memory development mode로 fallback한다.
+
+실제 API 키와 `DATABASE_URL` 값은 문서나 소스 코드에 기록하지 않고
+GitHub에도 올리지 않는다.
 
 ---
 
@@ -225,10 +230,21 @@ node server.js
 정상 실행 시:
 
 ```text
+TravelAI storage: PostgreSQL
+TravelAI server running on port 4000
+```
+
+또는 DATABASE_URL이 없을 때:
+
+```text
+TravelAI storage: In-memory development mode
 TravelAI server running on port 4000
 ```
 
 형태의 메시지가 출력된다.
+
+현재 백엔드는 로컬 Express 서버와 ngrok을 통해 사용한다.
+Cloud Run 배포는 아직 완료되지 않았으며 향후 작업이다.
 
 ---
 
@@ -268,43 +284,61 @@ DELETE /schedules/:id
 
 ## 11. 현재 데이터 저장 방식
 
-여행과 일정은 현재 Express 서버의 메모리에 임시 저장된다.
+여행과 일정 저장소는 `DATABASE_URL` 설정 여부에 따라 자동 선택된다.
 
-예:
+### PostgreSQL 모드
 
-```js
-let trips = [];
-let schedules = [];
+`DATABASE_URL`이 설정되어 있으면 Neon PostgreSQL에 영구 저장한다.
+
+현재 Neon 프로젝트 리전:
+
+```text
+Singapore
 ```
 
-따라서 서버를 종료하면 데이터가 사라질 수 있다.
+완료 및 검증된 항목:
 
-이 구조는 DB 연결 전 테스트용이다.
+* `npm run db:init`을 통한 스키마 초기화
+* `trips` 테이블 생성
+* `schedules` 테이블 생성
+* 여행 REST CRUD
+* 일정 REST CRUD
+* 존재하지 않는 여행에 일정 생성 차단
+* 여행 삭제 시 소속 일정 `ON DELETE CASCADE`
+* Express 서버 재시작 후 여행/일정 데이터 유지
 
-아직 영구 데이터 저장 구조는 아니다.
+실제 `DATABASE_URL` 값은 문서와 코드에 기록하지 않는다.
+
+### In-memory development fallback
+
+`DATABASE_URL`이 없으면 기존 메모리 기반 `trips` / `schedules` 저장 방식으로
+fallback하며 서버 실행을 중단하지 않는다.
+
+이 모드에서는 서버를 종료하면 여행과 일정 데이터가 사라진다.
+AsyncStorage에 현재 여행 정보가 남아 있고 서버에서 해당 여행 ID가 404이면,
+앱이 로컬 여행 정보로 서버 여행을 한 번 자동 복구하고 새 ID를 저장한다.
+
+서버 재시작으로 사라진 일정은 자동 복구하지 않는다.
+
+### 앱 내부 저장 위치
 
 현재 앱 전체 데이터는 한 저장소에 통합되어 있지 않다.
 
-* 여행: Express 서버에 생성한 뒤 현재 여행 정보를 AsyncStorage에도 저장
-* 일정: Express 서버에서 조회/생성/수정/삭제
+* 여행: Express 서버에 저장하고 현재 여행 정보는 AsyncStorage에도 저장
+* 일정: Express 서버의 PostgreSQL 또는 메모리 저장소에서 조회/생성/수정/삭제
 * 지출/예산/정산: AsyncStorage
 * 준비물 체크리스트: AsyncStorage
 
-따라서 서버를 재시작하면 AsyncStorage에는 기존 여행 ID가 남아 있어도,
-서버의 여행과 일정은 사라진 상태가 될 수 있다.
+일정의 AsyncStorage 오프라인 읽기 캐시는 아직 구현되지 않았다.
+따라서 서버 또는 네트워크에 연결할 수 없을 때 기존 일정을 읽는 기능은 향후 작업이다.
 
-이 상태에서는 기존 여행 ID로 일정 조회 결과가 비거나,
-새 일정 생성 시 서버에서 해당 여행을 찾지 못할 수 있다.
+홈의 `여행 삭제`는 서버의 `DELETE /trips/:id`를 호출한 뒤
+AsyncStorage의 현재 여행 정보도 삭제한다.
+PostgreSQL에서는 소속 일정이 CASCADE로 함께 삭제된다.
 
-영구 DB를 도입하기 전까지는 이 저장 위치 차이를 주의한다.
-
-현재 홈의 `여행 삭제` 기능은 AsyncStorage의 현재 여행 정보만 삭제한다.
-서버의 `DELETE /trips/:id`는 호출하지 않으므로,
-화면 안내와 달리 서버 메모리의 여행과 일정은 즉시 삭제되지 않는다.
-
-또한 서버 API는 여러 여행을 저장하고 조회할 수 있지만,
-현재 프론트엔드는 AsyncStorage에 저장된 한 개의 현재 여행만 사용한다.
-여행 전체 조회, 여행 수정, 서버 여행 삭제 서비스는 아직 화면과 연결되지 않았다.
+서버 API는 여러 여행을 저장하고 조회할 수 있지만,
+현재 프론트엔드는 AsyncStorage에 저장된 한 개의 현재 여행을 사용한다.
+여러 여행 선택/관리 UI와 여행 수정 UI는 아직 연결되지 않았다.
 
 ---
 
@@ -729,7 +763,7 @@ TravelAI의 장기 핵심 기능 중 하나다.
 
 금액 요약과 잔액 출력에는 천 단위 쉼표가 적용되어 있다.
 
-다만 `여행 자금` 영역의 다음 입력창 값에는 아직 입력 중 천 단위 쉼표가 적용되지 않는다.
+`여행 자금` 영역의 다음 입력창에도 입력 중 천 단위 쉼표가 적용되어 있다.
 
 * 총 여행 예산
 * 현금으로 준비한 금액
@@ -1071,19 +1105,20 @@ TravelAI는 여행 중 자주 보는 앱이므로:
 
 현재 코드 기준으로 남아 있는 가까운 작업 후보:
 
-1. 지출 화면 여행 자금 입력창의 천 단위 쉼표 처리
-2. 홈 여행 삭제 시 서버의 여행/일정도 함께 삭제하도록 데이터 정합성 수정
-3. 서버 재시작 후 AsyncStorage 여행 ID와 서버 메모리 데이터가 어긋나는 문제 정리
-4. 지도 경로 선/이동 시간/경로 최적화
-5. 실제 AI API 연동
+1. 일정 AsyncStorage 오프라인 읽기 캐시
+2. Cloud Run 백엔드 배포
+3. 지도 경로 선/이동 시간/경로 최적화
+4. 실제 AI API 연동
+5. 여러 여행 선택/관리 UI
 
 장기 미완성 기능:
 
 * 방문 도장/방문 기록
 * 여행 종료 및 여행 요약
-* 영구 데이터 저장
 * 완전한 다크 모드
 * 여러 여행 선택/관리 UI
+* Cloud Run 배포
+* 일정 오프라인 읽기 캐시
 
 우선순위는 사용자의 새 요청이 있으면 그 요청을 먼저 따른다.
 
