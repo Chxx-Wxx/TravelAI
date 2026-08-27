@@ -5,6 +5,7 @@ const dotenv = require("dotenv");
 dotenv.config();
 
 const {
+  hasDatabaseUrl,
   pool,
   query,
 } = require("./db");
@@ -283,7 +284,7 @@ app.post(
 );
 
 // ======================================================
-// 여행/일정 PostgreSQL helpers
+// 여행/일정 저장소 helpers
 // ======================================================
 
 const TRIP_COLUMNS = `
@@ -335,8 +336,11 @@ function hasOwn(object, key) {
   );
 }
 
+let trips = [];
+let schedules = [];
+
 // ======================================================
-// 여행 API - PostgreSQL 영구 저장
+// 여행 API - PostgreSQL 또는 메모리 저장
 // ======================================================
 
 app.post("/trips", async (req, res) => {
@@ -364,36 +368,47 @@ app.post("/trips", async (req, res) => {
       });
     }
 
-    const result = await query(
-      `
-        INSERT INTO trips (
-          id, trip_name, country, city,
-          start_date, end_date, people, members
-        )
-        VALUES (
-          $1, $2, $3, $4,
-          $5, $6, $7, $8::jsonb
-        )
-        RETURNING ${TRIP_COLUMNS}
-      `,
-      [
-        Date.now().toString(),
-        String(tripName).trim(),
-        String(country).trim(),
-        String(city).trim(),
-        startDate,
-        endDate,
-        people ??
-          String(members?.length ?? 1),
-        JSON.stringify(
-          Array.isArray(members)
-            ? members
-            : []
-        ),
-      ]
-    );
+    const newTrip = {
+      id: Date.now().toString(),
+      tripName: String(tripName).trim(),
+      country: String(country).trim(),
+      city: String(city).trim(),
+      startDate,
+      endDate,
+      people:
+        people ?? String(members?.length ?? 1),
+      members: Array.isArray(members) ? members : [],
+    };
 
-    const newTrip = toTrip(result.rows[0]);
+    if (hasDatabaseUrl) {
+      const result = await query(
+        `
+          INSERT INTO trips (
+            id, trip_name, country, city,
+            start_date, end_date, people, members
+          )
+          VALUES (
+            $1, $2, $3, $4,
+            $5, $6, $7, $8::jsonb
+          )
+          RETURNING ${TRIP_COLUMNS}
+        `,
+        [
+          newTrip.id,
+          newTrip.tripName,
+          newTrip.country,
+          newTrip.city,
+          newTrip.startDate,
+          newTrip.endDate,
+          newTrip.people,
+          JSON.stringify(newTrip.members),
+        ]
+      );
+
+      Object.assign(newTrip, toTrip(result.rows[0]));
+    } else {
+      trips.push(newTrip);
+    }
 
     console.log("여행 저장 성공:", newTrip);
 
@@ -413,6 +428,10 @@ app.post("/trips", async (req, res) => {
 
 app.get("/trips", async (req, res) => {
   try {
+    if (!hasDatabaseUrl) {
+      return res.json({ trips });
+    }
+
     const result = await query(`
       SELECT ${TRIP_COLUMNS}
       FROM trips
@@ -434,6 +453,20 @@ app.get("/trips", async (req, res) => {
 
 app.get("/trips/:id", async (req, res) => {
   try {
+    if (!hasDatabaseUrl) {
+      const trip = trips.find(
+        (item) => item.id === req.params.id
+      );
+
+      if (!trip) {
+        return res.status(404).json({
+          message: "여행을 찾을 수 없습니다.",
+        });
+      }
+
+      return res.json({ trip });
+    }
+
     const result = await query(
       `
         SELECT ${TRIP_COLUMNS}
@@ -464,6 +497,29 @@ app.get("/trips/:id", async (req, res) => {
 
 app.put("/trips/:id", async (req, res) => {
   try {
+    if (!hasDatabaseUrl) {
+      const index = trips.findIndex(
+        (item) => item.id === req.params.id
+      );
+
+      if (index === -1) {
+        return res.status(404).json({
+          message: "여행을 찾을 수 없습니다.",
+        });
+      }
+
+      trips[index] = {
+        ...trips[index],
+        ...req.body,
+        id: trips[index].id,
+      };
+
+      return res.json({
+        message: "여행이 수정되었습니다.",
+        trip: trips[index],
+      });
+    }
+
     const fieldMap = [
       ["tripName", "trip_name"],
       ["country", "country"],
@@ -545,6 +601,29 @@ app.put("/trips/:id", async (req, res) => {
 
 app.delete("/trips/:id", async (req, res) => {
   try {
+    if (!hasDatabaseUrl) {
+      const exists = trips.some(
+        (item) => item.id === req.params.id
+      );
+
+      if (!exists) {
+        return res.status(404).json({
+          message: "여행을 찾을 수 없습니다.",
+        });
+      }
+
+      trips = trips.filter(
+        (item) => item.id !== req.params.id
+      );
+      schedules = schedules.filter(
+        (schedule) => schedule.tripId !== req.params.id
+      );
+
+      return res.json({
+        message: "여행이 삭제되었습니다.",
+      });
+    }
+
     const result = await query(
       `
         DELETE FROM trips
@@ -574,7 +653,7 @@ app.delete("/trips/:id", async (req, res) => {
 });
 
 // ======================================================
-// 일정 API - PostgreSQL 영구 저장
+// 일정 API - PostgreSQL 또는 메모리 저장
 // ======================================================
 
 app.post("/schedules", async (req, res) => {
@@ -607,40 +686,71 @@ app.post("/schedules", async (req, res) => {
       });
     }
 
-    const result = await query(
-      `
-        INSERT INTO schedules (
-          id, trip_id, title, location, address,
-          latitude, longitude, place_id, category,
-          duration_minutes, date, time, memo
-        )
-        VALUES (
-          $1, $2, $3, $4, $5,
-          $6, $7, $8, $9, $10,
-          $11, $12, $13
-        )
-        RETURNING ${SCHEDULE_COLUMNS}
-      `,
-      [
-        Date.now().toString(),
-        tripId,
-        String(title).trim(),
-        String(location).trim(),
-        address ?? "",
-        latitude ?? null,
-        longitude ?? null,
-        placeId ?? null,
-        category ?? "기타",
-        durationMinutes ?? 60,
-        date,
-        time,
-        memo ?? "",
-      ]
-    );
+    const newSchedule = {
+      id: Date.now().toString(),
+      tripId,
+      title: String(title).trim(),
+      location: String(location).trim(),
+      address: address ?? "",
+      latitude: latitude ?? null,
+      longitude: longitude ?? null,
+      placeId: placeId ?? null,
+      category: category ?? "기타",
+      durationMinutes: durationMinutes ?? 60,
+      date,
+      time,
+      memo: memo ?? "",
+    };
 
-    const newSchedule = toSchedule(
-      result.rows[0]
-    );
+    if (hasDatabaseUrl) {
+      const result = await query(
+        `
+          INSERT INTO schedules (
+            id, trip_id, title, location, address,
+            latitude, longitude, place_id, category,
+            duration_minutes, date, time, memo
+          )
+          VALUES (
+            $1, $2, $3, $4, $5,
+            $6, $7, $8, $9, $10,
+            $11, $12, $13
+          )
+          RETURNING ${SCHEDULE_COLUMNS}
+        `,
+        [
+          newSchedule.id,
+          newSchedule.tripId,
+          newSchedule.title,
+          newSchedule.location,
+          newSchedule.address,
+          newSchedule.latitude,
+          newSchedule.longitude,
+          newSchedule.placeId,
+          newSchedule.category,
+          newSchedule.durationMinutes,
+          newSchedule.date,
+          newSchedule.time,
+          newSchedule.memo,
+        ]
+      );
+
+      Object.assign(
+        newSchedule,
+        toSchedule(result.rows[0])
+      );
+    } else {
+      const tripExists = trips.some(
+        (trip) => trip.id === tripId
+      );
+
+      if (!tripExists) {
+        return res.status(404).json({
+          message: "해당 여행을 찾을 수 없습니다.",
+        });
+      }
+
+      schedules.push(newSchedule);
+    }
 
     console.log(
       "일정 저장 성공:",
@@ -671,6 +781,21 @@ app.post("/schedules", async (req, res) => {
 app.get("/schedules", async (req, res) => {
   try {
     const { tripId } = req.query;
+
+    if (!hasDatabaseUrl) {
+      const result = schedules
+        .filter(
+          (schedule) =>
+            !tripId || schedule.tripId === tripId
+        )
+        .sort((a, b) =>
+          `${a.date} ${a.time}`.localeCompare(
+            `${b.date} ${b.time}`
+          )
+        );
+
+      return res.json({ schedules: result });
+    }
 
     const result = tripId
       ? await query(
@@ -703,6 +828,20 @@ app.get("/schedules", async (req, res) => {
 
 app.get("/schedules/:id", async (req, res) => {
   try {
+    if (!hasDatabaseUrl) {
+      const schedule = schedules.find(
+        (item) => item.id === req.params.id
+      );
+
+      if (!schedule) {
+        return res.status(404).json({
+          message: "일정을 찾을 수 없습니다.",
+        });
+      }
+
+      return res.json({ schedule });
+    }
+
     const result = await query(
       `
         SELECT ${SCHEDULE_COLUMNS}
@@ -733,6 +872,30 @@ app.get("/schedules/:id", async (req, res) => {
 
 app.put("/schedules/:id", async (req, res) => {
   try {
+    if (!hasDatabaseUrl) {
+      const index = schedules.findIndex(
+        (item) => item.id === req.params.id
+      );
+
+      if (index === -1) {
+        return res.status(404).json({
+          message: "일정을 찾을 수 없습니다.",
+        });
+      }
+
+      schedules[index] = {
+        ...schedules[index],
+        ...req.body,
+        id: schedules[index].id,
+        tripId: schedules[index].tripId,
+      };
+
+      return res.json({
+        message: "일정이 수정되었습니다.",
+        schedule: schedules[index],
+      });
+    }
+
     const fieldMap = [
       ["title", "title"],
       ["location", "location"],
@@ -813,6 +976,26 @@ app.put("/schedules/:id", async (req, res) => {
 
 app.delete("/schedules/:id", async (req, res) => {
   try {
+    if (!hasDatabaseUrl) {
+      const exists = schedules.some(
+        (item) => item.id === req.params.id
+      );
+
+      if (!exists) {
+        return res.status(404).json({
+          message: "일정을 찾을 수 없습니다.",
+        });
+      }
+
+      schedules = schedules.filter(
+        (item) => item.id !== req.params.id
+      );
+
+      return res.json({
+        message: "일정이 삭제되었습니다.",
+      });
+    }
+
     const result = await query(
       `
         DELETE FROM schedules
@@ -850,9 +1033,16 @@ const port =
   4000;
 
 async function startServer() {
-  await query("SELECT 1");
+  if (hasDatabaseUrl) {
+    await query("SELECT 1");
+  }
 
   app.listen(port, () => {
+    console.log(
+      hasDatabaseUrl
+        ? "TravelAI storage: PostgreSQL"
+        : "TravelAI storage: In-memory development mode"
+    );
     console.log(
       `TravelAI server running on port ${port}`
     );
@@ -865,6 +1055,6 @@ startServer().catch(async (error) => {
     error
   );
 
-  await pool.end().catch(() => {});
+  await pool?.end().catch(() => {});
   process.exitCode = 1;
 });

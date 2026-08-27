@@ -3,17 +3,13 @@ const { Pool } = require("pg");
 const databaseUrl =
   process.env.DATABASE_URL;
 
-if (!databaseUrl) {
-  throw new Error(
-    "DATABASE_URL이 설정되지 않았습니다. server/.env를 확인해주세요."
-  );
-}
+const pool = databaseUrl
+  ? new Pool({
+      connectionString: databaseUrl,
+    })
+  : null;
 
-const pool = new Pool({
-  connectionString: databaseUrl,
-});
-
-pool.on("error", (error) => {
+pool?.on("error", (error) => {
   console.error(
     "PostgreSQL 연결 오류:",
     error
@@ -21,8 +17,15 @@ pool.on("error", (error) => {
 });
 
 module.exports = {
+  hasDatabaseUrl: Boolean(databaseUrl),
   pool,
   query(text, params) {
+    if (!pool) {
+      throw new Error(
+        "PostgreSQL query attempted without DATABASE_URL."
+      );
+    }
+
     return pool.query(text, params);
   },
 };
