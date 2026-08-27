@@ -25,14 +25,24 @@ import {
 
 import AppButton from "../../components/AppButton";
 import AppInput from "../../components/AppInput";
+import PlaceCandidateList from "../../components/PlaceCandidateList";
+
+import {
+  usePlaceAutocomplete,
+} from "../../hooks/use-place-autocomplete";
+
+import {
+  hasValidScheduleLocation,
+} from "../../lib/schedule-location";
 
 import {
   getCurrentTripWithRecovery,
 } from "../../services/current-trip";
 
 import {
+  arePlaceNamesEquivalent,
+  findConfidentPlaceMatch,
   PlaceResult,
-  searchPlaces,
 } from "../../services/place";
 
 import {
@@ -61,6 +71,14 @@ const durations = [
   120,
   180,
 ];
+
+type StoredPlaceLink = {
+  id?: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+};
 
 export default function EditScheduleScreen() {
   const { id } =
@@ -102,22 +120,30 @@ export default function EditScheduleScreen() {
     );
 
   const [
-    placeResults,
-    setPlaceResults,
-  ] =
-    useState<PlaceResult[]>([]);
-
-  const [
-    searchingPlace,
-    setSearchingPlace,
-  ] =
-    useState(false);
-
-  const [
     selectedPlace,
     setSelectedPlace,
   ] =
     useState(false);
+
+  const [
+    pendingPlaceSelection,
+    setPendingPlaceSelection,
+  ] = useState(false);
+
+  const [saving, setSaving] =
+    useState(false);
+
+  const [
+    originalPlace,
+    setOriginalPlace,
+  ] = useState<StoredPlaceLink | null>(
+    null
+  );
+
+  const [
+    locationEdited,
+    setLocationEdited,
+  ] = useState(false);
 
   const [
     category,
@@ -156,6 +182,40 @@ export default function EditScheduleScreen() {
 
   const [loading, setLoading] =
     useState(true);
+
+  const matchesOriginalPlace =
+    Boolean(
+      originalPlace &&
+        arePlaceNamesEquivalent(
+          location,
+          originalPlace.name
+        )
+    );
+
+  const {
+    results: placeResults,
+    isSearching:
+      searchingPlace,
+    searchNow:
+      searchPlacesNow,
+    clearResults:
+      clearPlaceResults,
+    showResults:
+      showPlaceResults,
+  } = usePlaceAutocomplete({
+    query: location,
+    date: formatDate(date),
+    time: formatTime(time),
+    scheduleId: id,
+    existingLocation: originalPlace,
+    enabled:
+      !loading &&
+      locationEdited &&
+      !matchesOriginalPlace &&
+      !selectedPlace &&
+      !pendingPlaceSelection &&
+      !saving,
+  });
 
   function formatDate(
     value: Date
@@ -286,13 +346,32 @@ export default function EditScheduleScreen() {
         );
 
         setSelectedPlace(
-          Boolean(
-            schedule.latitude !=
-              null &&
-              schedule.longitude !=
-                null
+          hasValidScheduleLocation(
+            schedule
           )
         );
+
+        setOriginalPlace(
+          hasValidScheduleLocation(
+            schedule
+          )
+            ? {
+                id:
+                  schedule.placeId ??
+                  undefined,
+                name:
+                  schedule.location,
+                address:
+                  schedule.address ?? "",
+                latitude:
+                  schedule.latitude,
+                longitude:
+                  schedule.longitude,
+              }
+            : null
+        );
+
+        setLocationEdited(false);
 
         setCategory(
           schedule.category ??
@@ -349,6 +428,32 @@ export default function EditScheduleScreen() {
     text: string
   ) {
     setLocation(text);
+    setLocationEdited(true);
+    clearPlaceResults();
+    setPendingPlaceSelection(false);
+
+    if (
+      originalPlace &&
+      arePlaceNamesEquivalent(
+        text,
+        originalPlace.name
+      )
+    ) {
+      setAddress(
+        originalPlace.address
+      );
+      setLatitude(
+        originalPlace.latitude
+      );
+      setLongitude(
+        originalPlace.longitude
+      );
+      setPlaceId(
+        originalPlace.id
+      );
+      setSelectedPlace(true);
+      return;
+    }
 
     // 장소명을 직접 수정하면
     // 기존 좌표가 틀릴 수 있으므로 초기화
@@ -357,7 +462,6 @@ export default function EditScheduleScreen() {
     setLongitude(undefined);
     setPlaceId(undefined);
     setSelectedPlace(false);
-    setPlaceResults([]);
   }
 
   async function handlePlaceSearch() {
@@ -371,19 +475,12 @@ export default function EditScheduleScreen() {
     }
 
     try {
-      setSearchingPlace(true);
-
-      const trip =
-        await getCurrentTripWithRecovery();
-
-      const query =
-        trip?.city
-          ? `${location.trim()} ${trip.city}`
-          : location.trim();
+      setPendingPlaceSelection(false);
+      clearPlaceResults();
 
       const results =
-        await searchPlaces(
-          query
+        await searchPlacesNow(
+          location.trim()
         );
 
       if (
@@ -397,9 +494,6 @@ export default function EditScheduleScreen() {
         return;
       }
 
-      setPlaceResults(
-        results
-      );
     } catch (error) {
       console.error(
         "장소 검색 실패:",
@@ -410,14 +504,15 @@ export default function EditScheduleScreen() {
         "장소 검색 실패",
         "장소를 검색하지 못했습니다."
       );
-    } finally {
-      setSearchingPlace(false);
     }
   }
 
   function handleSelectPlace(
     place: PlaceResult
   ) {
+    const shouldSave =
+      pendingPlaceSelection;
+
     setLocation(
       place.name
     );
@@ -439,8 +534,14 @@ export default function EditScheduleScreen() {
     );
 
     setSelectedPlace(true);
+    setLocationEdited(false);
+    setPendingPlaceSelection(false);
 
-    setPlaceResults([]);
+    clearPlaceResults();
+
+    if (shouldSave) {
+      void handleUpdate(place);
+    }
   }
 
   function handleDateChange(
@@ -497,8 +598,102 @@ export default function EditScheduleScreen() {
     }
   }
 
-  async function handleUpdate() {
+  async function persistUpdate(
+    tripId: string,
+    linkedPlace: StoredPlaceLink | null
+  ) {
     if (!id) {
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      await updateServerSchedule(
+        id,
+        {
+          tripId,
+          title:
+            title.trim(),
+          location:
+            linkedPlace?.name ??
+            location.trim(),
+          address:
+            linkedPlace?.address ||
+            undefined,
+          latitude:
+            linkedPlace?.latitude,
+          longitude:
+            linkedPlace?.longitude,
+          placeId:
+            linkedPlace?.id,
+          category,
+          durationMinutes,
+          date:
+            formatDate(date),
+          time:
+            formatTime(time),
+          memo:
+            memo.trim(),
+        }
+      );
+
+      Alert.alert(
+        "완료",
+        linkedPlace
+          ? "일정과 장소 위치가 수정되었습니다."
+          : "일정이 위치 미연결 상태로 수정되었습니다.",
+        [
+          {
+            text: "확인",
+            onPress: () =>
+              router.back(),
+          },
+        ]
+      );
+    } catch (error) {
+      console.error(
+        "일정 수정 실패:",
+        error
+      );
+
+      Alert.alert(
+        "수정 실패",
+        "일정을 수정하지 못했습니다."
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function offerUpdateWithoutLocation(
+    message: string
+  ) {
+    Alert.alert(
+      "위치 연결 안 함",
+      message,
+      [
+        {
+          text: "취소",
+          style: "cancel",
+        },
+        {
+          text: "위치 없이 저장",
+          onPress: () =>
+            void handleUpdate(null),
+        },
+      ]
+    );
+  }
+
+  async function handleUpdate(
+    placeOverride?: PlaceResult | null
+  ) {
+    if (!id) {
+      return;
+    }
+
+    if (saving) {
       return;
     }
 
@@ -569,67 +764,94 @@ const tripStart =
       return;
     }
 
-    try {
-      await updateServerSchedule(
-        id,
+    if (placeOverride !== undefined) {
+      await persistUpdate(
+        trip.id,
+        placeOverride
+      );
+      return;
+    }
+
+    if (
+      matchesOriginalPlace &&
+      originalPlace
+    ) {
+      await persistUpdate(
+        trip.id,
+        originalPlace
+      );
+      return;
+    }
+
+    const currentLocation = {
+      latitude,
+      longitude,
+    };
+
+    if (
+      selectedPlace &&
+      hasValidScheduleLocation(
+        currentLocation
+      )
+    ) {
+      await persistUpdate(
+        trip.id,
         {
-          tripId: trip.id,
-          title:
-            title.trim(),
-
-          location:
-            location.trim(),
-
-          address:
-            address ||
-            undefined,
-
-          latitude,
-
-          longitude,
-
-          placeId,
-
-          category,
-
-          durationMinutes,
-
-          date:
-            formatDate(
-              date
-            ),
-
-          time:
-            formatTime(
-              time
-            ),
-
-          memo:
-            memo.trim(),
+          id: placeId,
+          name: location.trim(),
+          address,
+          latitude:
+            currentLocation.latitude,
+          longitude:
+            currentLocation.longitude,
         }
       );
-    
-      Alert.alert(
-        "완료",
-        "일정이 수정되었습니다.",
-        [
-          {
-            text: "확인",
+      return;
+    }
 
-            onPress: () =>
-              router.back(),
-          },
-        ]
+    setSaving(true);
+
+    const query = location.trim();
+
+    try {
+      const results =
+        await searchPlacesNow(
+          query
+        );
+      const confidentPlace =
+        findConfidentPlaceMatch(
+          query,
+          results
+        );
+
+      if (confidentPlace) {
+        await persistUpdate(
+          trip.id,
+          confidentPlace
+        );
+        return;
+      }
+
+      if (results.length > 0) {
+        showPlaceResults(query, results);
+        setPendingPlaceSelection(true);
+        setSaving(false);
+        return;
+      }
+
+      setSaving(false);
+      offerUpdateWithoutLocation(
+        "정확한 장소를 찾지 못했습니다. 입력한 장소명만 저장할 수 있습니다."
       );
     } catch (error) {
       console.error(
-        "일정 수정 실패:",
+        "저장 전 장소 검색 실패:",
         error
       );
 
-      Alert.alert(
-        "수정 실패",
-        "일정을 수정하지 못했습니다."
+      setSaving(false);
+      offerUpdateWithoutLocation(
+        "장소 검색에 실패했습니다. 입력한 장소명만 저장할 수 있습니다."
       );
     }
   }
@@ -757,7 +979,9 @@ const tripStart =
                 fontWeight: "bold",
               }}
             >
-              검색
+              {selectedPlace
+                ? "다시 검색"
+                : "위치 연결"}
             </Text>
           )}
         </Pressable>
@@ -797,72 +1021,45 @@ const tripStart =
         </View>
       )}
 
-      {placeResults.length >
-        0 && (
+      {!selectedPlace && (
         <View
           style={{
             marginTop: 10,
-            marginBottom: 18,
+            padding: 12,
+            borderRadius: 12,
             backgroundColor:
-              "white",
-            borderRadius: 14,
-            overflow:
-              "hidden",
+              "#F3F4F6",
           }}
         >
-          {placeResults.map(
-            (
-              place,
-              index
-            ) => (
-              <Pressable
-                key={
-                  place.id ||
-                  `${place.name}-${index}`
-                }
-                onPress={() =>
-                  handleSelectPlace(
-                    place
-                  )
-                }
-                style={{
-                  padding: 14,
+          <Text
+            style={{
+              color: "#6B7280",
+              fontWeight: "bold",
+              fontSize: 13,
+            }}
+          >
+            위치 미연결
+          </Text>
 
-                  borderBottomWidth:
-                    index <
-                    placeResults.length -
-                      1
-                      ? 1
-                      : 0,
-
-                  borderBottomColor:
-                    "#E5E7EB",
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 16,
-                    fontWeight: "bold",
-                    color: "#111827",
-                  }}
-                >
-                  {place.name}
-                </Text>
-
-                <Text
-                  style={{
-                    marginTop: 5,
-                    color: "#6B7280",
-                    fontSize: 13,
-                  }}
-                >
-                  {place.address}
-                </Text>
-              </Pressable>
-            )
-          )}
+          <Text
+            style={{
+              marginTop: 4,
+              color: "#9CA3AF",
+              fontSize: 12,
+              lineHeight: 17,
+            }}
+          >
+            장소를 검색해 선택하면 지도와 일정 날씨를 사용할 수 있습니다.
+          </Text>
         </View>
       )}
+
+      <PlaceCandidateList
+        results={placeResults}
+        pendingSelection={pendingPlaceSelection}
+        onSelect={handleSelectPlace}
+        onSaveWithoutLocation={() => void handleUpdate(null)}
+      />
 
       <Text
         style={{
@@ -1132,9 +1329,13 @@ const tripStart =
         }}
       >
         <AppButton
-          title="수정 내용 저장"
-          onPress={
-            handleUpdate
+          title={
+            saving
+              ? "위치 확인 중..."
+              : "수정 내용 저장"
+          }
+          onPress={() =>
+            void handleUpdate()
           }
         />
       </View>

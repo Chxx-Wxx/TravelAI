@@ -75,7 +75,28 @@ function makeFallbackQuery(query) {
   return null;
 }
 
-async function requestPlaces(query) {
+const PLACES_SEARCH_PAGE_SIZE = 10;
+const PLACES_BIAS_RADIUS_METERS = 20000;
+
+function normalizePlaceBias(value) {
+  const latitude = Number(value?.latitude);
+  const longitude = Number(value?.longitude);
+
+  if (
+    !Number.isFinite(latitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    !Number.isFinite(longitude) ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    return null;
+  }
+
+  return { latitude, longitude };
+}
+
+async function requestPlaces(query, bias) {
   const response = await fetch(
     "https://places.googleapis.com/v1/places:searchText",
     {
@@ -92,28 +113,30 @@ async function requestPlaces(query) {
           "places.displayName",
           "places.formattedAddress",
           "places.location",
+          "places.primaryType",
+          "places.types",
         ].join(","),
       },
 
       body: JSON.stringify({
         textQuery: query,
 
+        pageSize: PLACES_SEARCH_PAGE_SIZE,
+
         languageCode: "ko",
 
         regionCode: "JP",
 
-        // 현재는 테스트용으로 도쿄 중심
-        // 나중에 여행 도시 기준으로 자동 변경 예정
-        locationBias: {
-          circle: {
-            center: {
-              latitude: 35.6762,
-              longitude: 139.6503,
-            },
-
-            radius: 50000,
-          },
-        },
+        ...(bias
+          ? {
+              locationBias: {
+                circle: {
+                  center: bias,
+                  radius: PLACES_BIAS_RADIUS_METERS,
+                },
+              },
+            }
+          : {}),
       }),
     }
   );
@@ -144,6 +167,12 @@ function convertPlaces(data) {
 
       longitude:
         place.location?.longitude,
+
+      primaryType:
+        place.primaryType,
+
+      types:
+        place.types ?? [],
     })) ?? []
   );
 }
@@ -159,6 +188,10 @@ app.post(
         normalizeQuery(
           receivedQuery
         );
+
+      const bias = normalizePlaceBias(
+        req.body?.bias
+      );
 
       if (!query) {
         return res
@@ -198,7 +231,8 @@ app.post(
 
       const first =
         await requestPlaces(
-          query
+          query,
+          bias
         );
 
       if (!first.response.ok) {
@@ -241,7 +275,8 @@ app.post(
 
         const second =
           await requestPlaces(
-            fallbackQuery
+            fallbackQuery,
+            bias
           );
 
         if (

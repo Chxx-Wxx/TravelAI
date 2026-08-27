@@ -25,6 +25,10 @@ import {
 } from "../../lib/storage";
 
 import {
+  hasValidScheduleLocation,
+} from "../../lib/schedule-location";
+
+import {
   fetchSchedules,
 } from "../../services/schedule";
 
@@ -200,13 +204,7 @@ export default function MapScreen() {
   const schedulesWithCoordinates =
     useMemo(() => {
       return selectedSchedules.filter(
-        (
-          schedule
-        ) =>
-          typeof schedule.latitude ===
-            "number" &&
-          typeof schedule.longitude ===
-            "number"
+        hasValidScheduleLocation
       );
     }, [
       selectedSchedules,
@@ -308,13 +306,7 @@ export default function MapScreen() {
     const coordinates =
       schedulesToFocus
         .filter(
-          (
-            schedule
-          ) =>
-            typeof schedule.latitude ===
-              "number" &&
-            typeof schedule.longitude ===
-              "number"
+          hasValidScheduleLocation
         )
         .map(
           (
@@ -766,10 +758,9 @@ export default function MapScreen() {
               index
             ) => {
               const hasCoordinates =
-                typeof schedule.latitude ===
-                  "number" &&
-                typeof schedule.longitude ===
-                  "number";
+                hasValidScheduleLocation(
+                  schedule
+                );
 
               const duration =
                 formatDuration(

@@ -20,6 +20,10 @@ import {
 import AppButton from "../../components/AppButton";
 
 import {
+  hasValidScheduleLocation,
+} from "../../lib/schedule-location";
+
+import {
   getCurrentTripWithRecovery,
 } from "../../services/current-trip";
 
@@ -753,6 +757,21 @@ export default function ScheduleScreen() {
                                 }
                               </Text>
                             ) : null}
+
+                            {!hasValidScheduleLocation(
+                              schedule
+                            ) && (
+                              <Text
+                                style={{
+                                  marginTop: 6,
+                                  fontSize: 12,
+                                  color:
+                                    "#9CA3AF",
+                                }}
+                              >
+                                위치 미연결 · 지도·날씨 사용 불가
+                              </Text>
+                            )}
 
                             {schedule.durationMinutes && (
                               <Text

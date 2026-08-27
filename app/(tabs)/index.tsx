@@ -36,7 +36,10 @@ import {
 } from "../../services/trip";
 
 import {
+  fetchScheduleWeather,
   fetchWeather,
+  getNextUpcomingSchedule,
+  ScheduleWeatherData,
   WeatherData,
 } from "../../services/weather";
 
@@ -86,6 +89,21 @@ export default function HomeScreen() {
   ] =
     useState<
       WeatherData | null
+    >(null);
+
+  const [
+    nextSchedule,
+    setNextSchedule,
+  ] = useState<Schedule | null>(
+    null
+  );
+
+  const [
+    nextScheduleWeather,
+    setNextScheduleWeather,
+  ] =
+    useState<
+      ScheduleWeatherData | null
     >(null);
 
   const [
@@ -162,94 +180,132 @@ export default function HomeScreen() {
               []
             );
 
+            setNextSchedule(
+              null
+            );
+
+            setNextScheduleWeather(
+              null
+            );
+
             setWeather(
               null
+            );
+
+            setWeatherLoading(
+              false
             );
 
             return;
           }
 
-          // 날씨 불러오기
-          if (
-            tripData.city
-          ) {
-            setWeatherLoading(
-              true
+          const today =
+            getTodayString();
+          let filtered: Schedule[] = [];
+
+          if (tripData.id) {
+            try {
+              const schedules =
+                await fetchSchedules(
+                  tripData.id
+                );
+
+              filtered = schedules
+                .filter(
+                  (
+                    schedule:
+                      Schedule
+                  ) =>
+                    schedule.date ===
+                    today
+                )
+                .sort(
+                  (
+                    first:
+                      Schedule,
+                    second:
+                      Schedule
+                  ) =>
+                    first.time.localeCompare(
+                      second.time
+                    )
+                );
+            } catch (error) {
+              console.error(
+                "오늘 일정 불러오기 실패:",
+                error
+              );
+            }
+          }
+
+          setTodaySchedules(
+            filtered
+          );
+
+          const upcomingSchedule =
+            getNextUpcomingSchedule(
+              filtered
             );
 
-            try {
-              const weatherData =
+          setNextSchedule(
+            upcomingSchedule
+          );
+          setNextScheduleWeather(
+            null
+          );
+
+          setWeather(
+            null
+          );
+
+          setWeatherLoading(
+            true
+          );
+
+          try {
+            if (upcomingSchedule) {
+              const scheduleWeather =
+                await fetchScheduleWeather(
+                  upcomingSchedule
+                );
+
+              setNextScheduleWeather(
+                scheduleWeather
+              );
+
+              if (
+                scheduleWeather.status ===
+                "available"
+              ) {
+                return;
+              }
+            }
+
+            if (tripData.city) {
+              const fallbackWeather =
                 await fetchWeather(
                   tripData.city,
                   tripData.country
                 );
 
               setWeather(
-                weatherData
-              );
-            } catch (
-              error
-            ) {
-              console.error(
-                "날씨 불러오기 실패:",
-                error
-              );
-
-              setWeather(
-                null
-              );
-            } finally {
-              setWeatherLoading(
-                false
+                fallbackWeather
               );
             }
-          }
-
-          // 서버 여행 ID가 없으면
-          // 일정은 불러오지 않음
-          if (
-            !tripData.id
-          ) {
-            setTodaySchedules(
-              []
+          } catch (error) {
+            console.error(
+              "날씨 불러오기 실패:",
+              error
             );
 
-            return;
-          }
-
-          const schedules =
-            await fetchSchedules(
-              tripData.id
+            setWeather(
+              null
             );
-
-          const today =
-            getTodayString();
-
-          const filtered =
-            schedules
-              .filter(
-                (
-                  schedule:
-                    Schedule
-                ) =>
-                  schedule.date ===
-                  today
-              )
-              .sort(
-                (
-                  a:
-                    Schedule,
-                  b:
-                    Schedule
-                ) =>
-                  a.time.localeCompare(
-                    b.time
-                  )
-              );
-
-          setTodaySchedules(
-            filtered
-          );
+          } finally {
+            setWeatherLoading(
+              false
+            );
+          }
         } catch (error) {
           console.error(
             "홈 데이터 불러오기 실패:",
@@ -258,6 +314,22 @@ export default function HomeScreen() {
 
           setTodaySchedules(
             []
+          );
+
+          setNextSchedule(
+            null
+          );
+
+          setNextScheduleWeather(
+            null
+          );
+
+          setWeather(
+            null
+          );
+
+          setWeatherLoading(
+            false
           );
         }
       },
@@ -322,6 +394,14 @@ export default function HomeScreen() {
 
                 setTodaySchedules(
                   []
+                );
+
+                setNextSchedule(
+                  null
+                );
+
+                setNextScheduleWeather(
+                  null
                 );
 
                 setWeather(
@@ -631,9 +711,151 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {/* 실제 날씨 */}
+      {/* 다음 일정 시간대 날씨 */}
 
-      {trip && (
+      {trip && nextSchedule && (
+        <View
+          style={{
+            marginTop: 20,
+            backgroundColor:
+              "white",
+            borderRadius: 16,
+            padding: 20,
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 13,
+              color: "#3B82F6",
+              fontWeight: "bold",
+            }}
+          >
+            다음 일정
+          </Text>
+
+          <View
+            style={{
+              marginTop: 8,
+              flexDirection:
+                "row",
+              justifyContent:
+                "space-between",
+              alignItems:
+                "center",
+            }}
+          >
+            <View
+              style={{
+                flex: 1,
+                marginRight: 12,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 20,
+                  fontWeight:
+                    "bold",
+                  color: "#111827",
+                }}
+              >
+                {nextSchedule.location}
+                {" · "}
+                {nextSchedule.time}
+              </Text>
+
+              <Text
+                numberOfLines={1}
+                style={{
+                  marginTop: 5,
+                  color: "#6B7280",
+                  fontSize: 13,
+                }}
+              >
+                {nextSchedule.title}
+              </Text>
+            </View>
+
+            <Text
+              style={{
+                fontSize: 38,
+              }}
+            >
+              {nextScheduleWeather
+                ?.status ===
+              "available"
+                ? nextScheduleWeather.icon
+                : "🌤️"}
+            </Text>
+          </View>
+
+          {nextScheduleWeather
+            ?.status ===
+          "available" ? (
+            <View
+              style={{
+                marginTop: 16,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 28,
+                  fontWeight:
+                    "bold",
+                  color: "#111827",
+                }}
+              >
+                {Math.round(
+                  nextScheduleWeather.temperature
+                )}
+                °C
+                {" · "}
+                {nextScheduleWeather.description}
+              </Text>
+
+              <Text
+                style={{
+                  marginTop: 8,
+                  color: "#2563EB",
+                  fontSize: 15,
+                  fontWeight:
+                    "bold",
+                }}
+              >
+                {(nextScheduleWeather.forecastTime
+                  ?.slice(11, 13) ??
+                  nextSchedule.time.slice(
+                    0,
+                    2
+                  ))}
+                시 강수확률{" "}
+                {Math.round(
+                  nextScheduleWeather.precipitationProbability
+                )}
+                %
+              </Text>
+            </View>
+          ) : (
+            <Text
+              style={{
+                marginTop: 16,
+                color: "#6B7280",
+                fontSize: 14,
+              }}
+            >
+              {weatherLoading &&
+              !nextScheduleWeather
+                ? "일정 시간대 날씨를 확인하는 중입니다."
+                : nextScheduleWeather
+                    ?.message ??
+                  "예보 준비 전"}
+            </Text>
+          )}
+        </View>
+      )}
+
+      {/* 대표 도시 fallback 날씨 */}
+
+      {trip && weather && (
         <View
           style={{
             marginTop: 20,
@@ -670,7 +892,7 @@ export default function HomeScreen() {
                     "#111827",
                 }}
               >
-                🌤 {trip.city} 날씨
+                🌤 {weather.city} 현재 날씨
               </Text>
 
               <Text
@@ -683,7 +905,7 @@ export default function HomeScreen() {
                     "#9CA3AF",
                 }}
               >
-                오늘의 여행 날씨
+                일정 위치 예보를 사용할 수 없어 대표 도시 기준으로 표시합니다.
               </Text>
             </View>
 

@@ -1,3 +1,11 @@
+import type {
+  Schedule,
+} from "../types";
+
+import {
+  hasValidScheduleLocation,
+} from "../lib/schedule-location";
+
 export interface WeatherData {
   city: string;
 
@@ -16,6 +24,41 @@ export interface WeatherData {
   description: string;
   icon: string;
 }
+
+export type ScheduleWeatherStatus =
+  | "available"
+  | "missing_coordinates"
+  | "past"
+  | "forecast_unavailable"
+  | "error";
+
+type AvailableScheduleWeatherData = {
+  scheduleId: string;
+  status: "available";
+  forecastTime: string;
+  temperature: number;
+  precipitationProbability: number;
+  weatherCode: number;
+  description: string;
+  icon: string;
+};
+
+type UnavailableScheduleWeatherData = {
+  scheduleId: string;
+  status: Exclude<
+    ScheduleWeatherStatus,
+    "available"
+  >;
+  message: string;
+};
+
+export type ScheduleWeatherData =
+  | AvailableScheduleWeatherData
+  | UnavailableScheduleWeatherData;
+
+export const OPEN_METEO_FORECAST_DAYS = 16;
+export const WEATHER_CACHE_TTL_MS =
+  10 * 60 * 1000;
 
 interface GeocodingResult {
   name: string;
@@ -43,6 +86,13 @@ interface ForecastResponse {
 
     precipitation_probability_max?: number[];
 
+    weather_code?: number[];
+  };
+
+  hourly?: {
+    time?: string[];
+    temperature_2m?: number[];
+    precipitation_probability?: number[];
     weather_code?: number[];
   };
 }
@@ -149,7 +199,7 @@ function getWeatherInfo(
 }
 
 // 도시 이름으로 위도 / 경도 검색
-async function getCityCoordinates(
+export async function getCityCoordinates(
   city: string,
   country?: string
 ) {
@@ -226,7 +276,348 @@ async function getCityCoordinates(
   return results[0];
 }
 
-// 실제 날씨 조회
+type CachedForecastRequest = {
+  expiresAt: number;
+  promise: Promise<ForecastResponse>;
+};
+
+const forecastRequestCache =
+  new Map<
+    string,
+    CachedForecastRequest
+  >();
+
+function parseScheduleDateTime(
+  schedule: Pick<Schedule, "date" | "time">
+) {
+  const [year, month, day] =
+    schedule.date
+      .split("-")
+      .map(Number);
+  const [hour, minute] =
+    schedule.time
+      .split(":")
+      .map(Number);
+
+  if (
+    !year ||
+    !month ||
+    !day ||
+    Number.isNaN(hour) ||
+    Number.isNaN(minute)
+  ) {
+    return null;
+  }
+
+  const result = new Date(
+    year,
+    month - 1,
+    day,
+    hour,
+    minute,
+    0,
+    0
+  );
+
+  return Number.isNaN(result.getTime())
+    ? null
+    : result;
+}
+
+function getTodayStart(now: Date) {
+  const result = new Date(now);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function getForecastCacheKey(
+  latitude: number,
+  longitude: number,
+  date: string
+) {
+  return [
+    latitude.toFixed(4),
+    longitude.toFixed(4),
+    date,
+  ].join(":");
+}
+
+async function requestHourlyForecast(
+  latitude: number,
+  longitude: number,
+  date: string
+) {
+  const cacheKey =
+    getForecastCacheKey(
+      latitude,
+      longitude,
+      date
+    );
+  const cached =
+    forecastRequestCache.get(cacheKey);
+
+  if (
+    cached &&
+    cached.expiresAt > Date.now()
+  ) {
+    return cached.promise;
+  }
+
+  const params = new URLSearchParams({
+    latitude: String(latitude),
+    longitude: String(longitude),
+    hourly: [
+      "temperature_2m",
+      "precipitation_probability",
+      "weather_code",
+    ].join(","),
+    timezone: "auto",
+    start_date: date,
+    end_date: date,
+  });
+
+  const promise = fetch(
+    `https://api.open-meteo.com/v1/forecast?${params.toString()}`
+  ).then(async (response) => {
+    if (!response.ok) {
+      throw new Error(
+        "일정 시간대 날씨를 가져오지 못했습니다."
+      );
+    }
+
+    return (await response.json()) as ForecastResponse;
+  });
+
+  forecastRequestCache.set(
+    cacheKey,
+    {
+      expiresAt:
+        Date.now() + WEATHER_CACHE_TTL_MS,
+      promise,
+    }
+  );
+
+  promise.catch(() => {
+    if (
+      forecastRequestCache.get(cacheKey)?.promise ===
+      promise
+    ) {
+      forecastRequestCache.delete(cacheKey);
+    }
+  });
+
+  return promise;
+}
+
+function findNearestHourlyIndex(
+  hourlyTimes: string[],
+  schedule: Pick<Schedule, "date" | "time">
+) {
+  const [targetHour, targetMinute] =
+    schedule.time
+      .split(":")
+      .map(Number);
+  const targetMinutes =
+    targetHour * 60 + targetMinute;
+
+  let selectedIndex = -1;
+  let selectedDifference = Infinity;
+
+  hourlyTimes.forEach((value, index) => {
+    if (!value.startsWith(`${schedule.date}T`)) {
+      return;
+    }
+
+    const [hour, minute] = value
+      .slice(11, 16)
+      .split(":")
+      .map(Number);
+    const difference = Math.abs(
+      hour * 60 + minute - targetMinutes
+    );
+
+    if (difference < selectedDifference) {
+      selectedIndex = index;
+      selectedDifference = difference;
+    }
+  });
+
+  return selectedIndex;
+}
+
+export function getNextUpcomingSchedule(
+  schedules: Schedule[],
+  now = new Date()
+) {
+  return (
+    schedules
+      .map((schedule) => ({
+        schedule,
+        dateTime:
+          parseScheduleDateTime(schedule),
+      }))
+      .filter(
+        (
+          item
+        ): item is {
+          schedule: Schedule;
+          dateTime: Date;
+        } =>
+          item.dateTime !== null &&
+          item.dateTime.getTime() >= now.getTime()
+      )
+      .sort(
+        (first, second) =>
+          first.dateTime.getTime() -
+          second.dateTime.getTime()
+      )[0]?.schedule ?? null
+  );
+}
+
+export async function fetchScheduleWeather(
+  schedule: Schedule,
+  now = new Date()
+): Promise<ScheduleWeatherData> {
+  const scheduleDateTime =
+    parseScheduleDateTime(schedule);
+
+  if (!scheduleDateTime) {
+    return {
+      scheduleId: schedule.id,
+      status: "forecast_unavailable",
+      message: "예보 준비 전",
+    };
+  }
+
+  if (scheduleDateTime.getTime() < now.getTime()) {
+    return {
+      scheduleId: schedule.id,
+      status: "past",
+      message: "지난 일정",
+    };
+  }
+
+  if (!hasValidScheduleLocation(schedule)) {
+    return {
+      scheduleId: schedule.id,
+      status: "missing_coordinates",
+      message: "일정 위치 정보 없음",
+    };
+  }
+
+  const todayStart = getTodayStart(now);
+  const scheduleDay = getTodayStart(
+    scheduleDateTime
+  );
+  const dayDifference = Math.round(
+    (scheduleDay.getTime() - todayStart.getTime()) /
+      (24 * 60 * 60 * 1000)
+  );
+
+  if (
+    dayDifference < 0 ||
+    dayDifference >= OPEN_METEO_FORECAST_DAYS
+  ) {
+    return {
+      scheduleId: schedule.id,
+      status: "forecast_unavailable",
+      message: "예보 준비 전",
+    };
+  }
+
+  try {
+    const data =
+      await requestHourlyForecast(
+        schedule.latitude,
+        schedule.longitude,
+        schedule.date
+      );
+    const hourlyTimes =
+      data.hourly?.time ?? [];
+    const hourlyIndex =
+      findNearestHourlyIndex(
+        hourlyTimes,
+        schedule
+      );
+
+    if (hourlyIndex < 0) {
+      return {
+        scheduleId: schedule.id,
+        status: "forecast_unavailable",
+        message: "예보 준비 전",
+      };
+    }
+
+    const temperature =
+      data.hourly?.temperature_2m?.[
+        hourlyIndex
+      ];
+    const precipitationProbability =
+      data.hourly
+        ?.precipitation_probability?.[
+          hourlyIndex
+        ];
+    const weatherCode =
+      data.hourly?.weather_code?.[
+        hourlyIndex
+      ];
+
+    if (
+      temperature === undefined ||
+      precipitationProbability === undefined ||
+      weatherCode === undefined
+    ) {
+      return {
+        scheduleId: schedule.id,
+        status: "forecast_unavailable",
+        message: "예보 준비 전",
+      };
+    }
+
+    const weatherInfo =
+      getWeatherInfo(weatherCode);
+
+    return {
+      scheduleId: schedule.id,
+      status: "available",
+      forecastTime:
+        hourlyTimes[hourlyIndex],
+      temperature,
+      precipitationProbability,
+      weatherCode,
+      description:
+        weatherInfo.description,
+      icon: weatherInfo.icon,
+    };
+  } catch (error) {
+    console.error(
+      "일정 날씨 불러오기 실패:",
+      error
+    );
+
+    return {
+      scheduleId: schedule.id,
+      status: "error",
+      message: "일정 날씨를 불러오지 못했습니다.",
+    };
+  }
+}
+
+export async function fetchScheduleWeatherList(
+  schedules: Schedule[],
+  now = new Date()
+) {
+  return Promise.all(
+    schedules.map((schedule) =>
+      fetchScheduleWeather(
+        schedule,
+        now
+      )
+    )
+  );
+}
+
+// 일정 예보를 사용할 수 없을 때만 사용하는 대표 도시 fallback
 export async function fetchWeather(
   city: string,
   country?: string
@@ -240,21 +631,14 @@ export async function fetchWeather(
   const params =
     new URLSearchParams({
       latitude:
-        String(
-          location.latitude
-        ),
-
+        String(location.latitude),
       longitude:
-        String(
-          location.longitude
-        ),
-
+        String(location.longitude),
       current:
         [
           "temperature_2m",
           "weather_code",
         ].join(","),
-
       daily:
         [
           "temperature_2m_max",
@@ -262,16 +646,13 @@ export async function fetchWeather(
           "precipitation_probability_max",
           "weather_code",
         ].join(","),
-
       timezone: "auto",
-
       forecast_days: "1",
     });
 
-  const response =
-    await fetch(
-      `https://api.open-meteo.com/v1/forecast?${params.toString()}`
-    );
+  const response = await fetch(
+    `https://api.open-meteo.com/v1/forecast?${params.toString()}`
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -279,41 +660,26 @@ export async function fetchWeather(
     );
   }
 
-  const data:
-    ForecastResponse =
-    await response.json();
-
+  const data =
+    (await response.json()) as ForecastResponse;
   const temperature =
-    data.current
-      ?.temperature_2m;
-
+    data.current?.temperature_2m;
   const weatherCode =
-    data.current
-      ?.weather_code ??
-    data.daily
-      ?.weather_code?.[0];
-
+    data.current?.weather_code ??
+    data.daily?.weather_code?.[0];
   const maxTemperature =
-    data.daily
-      ?.temperature_2m_max?.[0];
-
+    data.daily?.temperature_2m_max?.[0];
   const minTemperature =
-    data.daily
-      ?.temperature_2m_min?.[0];
-
+    data.daily?.temperature_2m_min?.[0];
   const precipitationProbability =
     data.daily
       ?.precipitation_probability_max?.[0];
 
   if (
-    temperature ===
-      undefined ||
-    weatherCode ===
-      undefined ||
-    maxTemperature ===
-      undefined ||
-    minTemperature ===
-      undefined
+    temperature === undefined ||
+    weatherCode === undefined ||
+    maxTemperature === undefined ||
+    minTemperature === undefined
   ) {
     throw new Error(
       "날씨 데이터가 올바르지 않습니다."
@@ -321,36 +687,20 @@ export async function fetchWeather(
   }
 
   const weatherInfo =
-    getWeatherInfo(
-      weatherCode
-    );
+    getWeatherInfo(weatherCode);
 
   return {
-    city:
-      location.name,
-
-    latitude:
-      location.latitude,
-
-    longitude:
-      location.longitude,
-
+    city: location.name,
+    latitude: location.latitude,
+    longitude: location.longitude,
     temperature,
-
     maxTemperature,
-
     minTemperature,
-
     precipitationProbability:
-      precipitationProbability ??
-      0,
-
+      precipitationProbability ?? 0,
     weatherCode,
-
     description:
       weatherInfo.description,
-
-    icon:
-      weatherInfo.icon,
+    icon: weatherInfo.icon,
   };
 }

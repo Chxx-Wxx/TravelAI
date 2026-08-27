@@ -21,6 +21,15 @@ import {
 
 import AppButton from "../../components/AppButton";
 import AppInput from "../../components/AppInput";
+import PlaceCandidateList from "../../components/PlaceCandidateList";
+
+import {
+  usePlaceAutocomplete,
+} from "../../hooks/use-place-autocomplete";
+
+import {
+  hasValidScheduleLocation,
+} from "../../lib/schedule-location";
 
 import {
   getCurrentTripWithRecovery,
@@ -32,8 +41,8 @@ import {
 } from "../../types";
 
 import {
+  findConfidentPlaceMatch,
   PlaceResult,
-  searchPlaces,
 } from "../../services/place";
 
 import {
@@ -93,23 +102,17 @@ export default function CreateScheduleScreen() {
     >(undefined);
 
   const [
-    placeResults,
-    setPlaceResults,
-  ] =
-    useState<PlaceResult[]>(
-      []
-    );
-
-  const [
-    searchingPlace,
-    setSearchingPlace,
+    selectedPlace,
+    setSelectedPlace,
   ] =
     useState(false);
 
   const [
-    selectedPlace,
-    setSelectedPlace,
-  ] =
+    pendingPlaceSelection,
+    setPendingPlaceSelection,
+  ] = useState(false);
+
+  const [saving, setSaving] =
     useState(false);
 
   const [
@@ -134,6 +137,22 @@ export default function CreateScheduleScreen() {
 
   const [time, setTime] =
     useState(new Date());
+
+  const {
+    results: placeResults,
+    isSearching: searchingPlace,
+    searchNow: searchPlacesNow,
+    clearResults: clearPlaceResults,
+    showResults: showPlaceResults,
+  } = usePlaceAutocomplete({
+    query: location,
+    date: formatDate(date),
+    time: formatTime(time),
+    enabled:
+      !selectedPlace &&
+      !pendingPlaceSelection &&
+      !saving,
+  });
 
   const [
     showDatePicker,
@@ -236,30 +255,18 @@ export default function CreateScheduleScreen() {
     }
 
     try {
-      setSearchingPlace(
-        true
-      );
-
       setSelectedPlace(
         false
       );
 
-      setPlaceResults(
-        []
+      setPendingPlaceSelection(
+        false
       );
 
-      const trip =
-        await getCurrentTripWithRecovery();
-
-      const fullQuery =
-        trip?.city
-          ? `${query} ${trip.city}`
-          : query;
+      clearPlaceResults();
 
       const results =
-        await searchPlaces(
-          fullQuery
-        );
+        await searchPlacesNow(query);
 
       if (
         results.length === 0
@@ -272,9 +279,6 @@ export default function CreateScheduleScreen() {
         return;
       }
 
-      setPlaceResults(
-        results
-      );
     } catch (error) {
       console.error(
         "장소 검색 실패:",
@@ -285,16 +289,15 @@ export default function CreateScheduleScreen() {
         "장소 검색 실패",
         "장소 검색 중 문제가 발생했습니다. 백엔드와 ngrok 연결을 확인해주세요."
       );
-    } finally {
-      setSearchingPlace(
-        false
-      );
     }
   }
 
   function handleSelectPlace(
     place: PlaceResult
   ) {
+    const shouldSave =
+      pendingPlaceSelection;
+
     setLocation(
       place.name
     );
@@ -319,9 +322,15 @@ export default function CreateScheduleScreen() {
       true
     );
 
-    setPlaceResults(
-      []
+    setPendingPlaceSelection(
+      false
     );
+
+    clearPlaceResults();
+
+    if (shouldSave) {
+      void handleSave(place);
+    }
   }
 
   function handleLocationChange(
@@ -347,8 +356,10 @@ export default function CreateScheduleScreen() {
       undefined
     );
 
-    setPlaceResults(
-      []
+    clearPlaceResults();
+
+    setPendingPlaceSelection(
+      false
     );
   }
 
@@ -406,7 +417,136 @@ export default function CreateScheduleScreen() {
     }
   }
 
-  async function handleSave() {
+  async function persistSchedule(
+    tripId: string,
+    linkedPlace: PlaceResult | null
+  ) {
+    setSaving(true);
+
+    const newSchedule: Schedule = {
+      id:
+        Date.now().toString(),
+
+      tripId,
+
+      title:
+        title.trim(),
+
+      location:
+        linkedPlace?.name ??
+        location.trim(),
+
+      address:
+        linkedPlace?.address ||
+        undefined,
+
+      latitude:
+        linkedPlace?.latitude,
+
+      longitude:
+        linkedPlace?.longitude,
+
+      placeId:
+        linkedPlace?.id,
+
+      date:
+        formatDate(date),
+
+      time:
+        formatTime(time),
+
+      category,
+
+      durationMinutes,
+
+      memo:
+        memo.trim(),
+    };
+
+    try {
+      await createSchedule({
+        tripId,
+        title:
+          newSchedule.title,
+        location:
+          newSchedule.location,
+        address:
+          newSchedule.address,
+        latitude:
+          newSchedule.latitude,
+        longitude:
+          newSchedule.longitude,
+        placeId:
+          newSchedule.placeId,
+        category:
+          newSchedule.category,
+        durationMinutes:
+          newSchedule.durationMinutes,
+        date:
+          newSchedule.date,
+        time:
+          newSchedule.time,
+        memo:
+          newSchedule.memo,
+      });
+
+      Alert.alert(
+        "완료",
+        linkedPlace
+          ? "장소 위치와 함께 일정이 저장되었습니다."
+          : "일정이 저장되었습니다. 위치는 나중에 연결할 수 있습니다.",
+        [
+          {
+            text: "확인",
+            onPress: () =>
+              router.replace(
+                "/schedule"
+              ),
+          },
+        ]
+      );
+    } catch (error) {
+      console.error(
+        "일정 저장 실패:",
+        error
+      );
+
+      Alert.alert(
+        "일정 저장 실패",
+        "서버에 일정을 저장하지 못했습니다."
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function offerSaveWithoutLocation(
+    message: string
+  ) {
+    Alert.alert(
+      "위치 연결 안 함",
+      message,
+      [
+        {
+          text: "취소",
+          style: "cancel",
+        },
+        {
+          text: "위치 없이 저장",
+          onPress: () =>
+            void handleSave(null),
+        },
+      ]
+    );
+  }
+
+  async function handleSave(
+    placeOverride?: PlaceResult | null
+  ) {
+    if (saving) {
+      return;
+    }
+
     if (
       !title.trim() ||
       !location.trim()
@@ -486,111 +626,85 @@ export default function CreateScheduleScreen() {
       return;
     }
 
-    const newSchedule: Schedule = {
-      id:
-        Date.now().toString(),
-
-      tripId:
+    if (placeOverride !== undefined) {
+      await persistSchedule(
         trip.id,
+        placeOverride
+      );
+      return;
+    }
 
-      title:
-        title.trim(),
-
-      location:
-        location.trim(),
-
-      address:
-        address ||
-        undefined,
-
+    const currentLocation = {
       latitude,
-
       longitude,
-
-      placeId,
-
-      date:
-        formatDate(
-          date
-        ),
-
-      time:
-        formatTime(
-          time
-        ),
-
-      category,
-
-      durationMinutes,
-
-      memo:
-        memo.trim(),
     };
 
+    if (
+      selectedPlace &&
+      hasValidScheduleLocation(
+        currentLocation
+      )
+    ) {
+      await persistSchedule(
+        trip.id,
+        {
+          id: placeId ?? "",
+          name: location.trim(),
+          address,
+          latitude:
+            currentLocation.latitude,
+          longitude:
+            currentLocation.longitude,
+        }
+      );
+      return;
+    }
+
+    setSaving(true);
+
+    const query = location.trim();
+
     try {
-      await createSchedule({
-        tripId:
+      const results =
+        await searchPlacesNow(
+          query
+        );
+      const confidentPlace =
+        findConfidentPlaceMatch(
+          query,
+          results
+        );
+
+      if (confidentPlace) {
+        await persistSchedule(
           trip.id,
+          confidentPlace
+        );
+        return;
+      }
 
-        title:
-          newSchedule.title,
+      if (results.length > 0) {
+        showPlaceResults(query, results);
+        setPendingPlaceSelection(
+          true
+        );
+        setSaving(false);
+        return;
+      }
 
-        location:
-          newSchedule.location,
-
-        address:
-          newSchedule.address,
-
-        latitude:
-          newSchedule.latitude,
-
-        longitude:
-          newSchedule.longitude,
-
-        placeId:
-          newSchedule.placeId,
-
-        category:
-          newSchedule.category,
-
-        durationMinutes:
-          newSchedule.durationMinutes,
-
-        date:
-          newSchedule.date,
-
-        time:
-          newSchedule.time,
-
-        memo:
-          newSchedule.memo,
-      });
-
-      Alert.alert(
-        "완료",
-        selectedPlace
-          ? "장소 위치와 함께 일정이 저장되었습니다."
-          : "일정이 저장되었습니다. 장소는 직접 입력된 값으로 저장되었습니다.",
-        [
-          {
-            text: "확인",
-
-            onPress: () =>
-              router.replace(
-                "/schedule"
-              ),
-          },
-        ]
+      setSaving(false);
+      offerSaveWithoutLocation(
+        "정확한 장소를 찾지 못했습니다. 입력한 장소명만 저장할 수 있습니다."
       );
     } catch (error) {
       console.error(
-        "일정 저장 실패:",
+        "저장 전 장소 검색 실패:",
         error
       );
 
-      Alert.alert(
-        "일정 저장 실패",
-        "서버에 일정을 저장하지 못했습니다."
+      setSaving(false);
+      offerSaveWithoutLocation(
+        "장소 검색에 실패했습니다. 입력한 장소명만 저장할 수 있습니다."
       );
     }
   }
@@ -636,7 +750,7 @@ export default function CreateScheduleScreen() {
           color: "#374151",
         }}
       >
-        장소 검색
+        장소 (직접 입력 또는 검색)
       </Text>
 
       <View
@@ -739,73 +853,25 @@ export default function CreateScheduleScreen() {
         </View>
       )}
 
-      {placeResults.length >
-        0 && (
-        <View
+      {!selectedPlace && (
+        <Text
           style={{
-            marginTop: 10,
-            marginBottom: 18,
-            backgroundColor:
-              "white",
-            borderRadius: 14,
-            overflow:
-              "hidden",
+            marginTop: 9,
+            color: "#9CA3AF",
+            fontSize: 12,
+            lineHeight: 17,
           }}
         >
-          {placeResults.map(
-            (
-              place,
-              index
-            ) => (
-              <Pressable
-                key={
-                  place.id ||
-                  `${place.name}-${index}`
-                }
-                onPress={() =>
-                  handleSelectPlace(
-                    place
-                  )
-                }
-                style={{
-                  padding: 14,
-
-                  borderBottomWidth:
-                    index <
-                    placeResults.length -
-                      1
-                      ? 1
-                      : 0,
-
-                  borderBottomColor:
-                    "#E5E7EB",
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 16,
-                    fontWeight: "bold",
-                    color: "#111827",
-                  }}
-                >
-                  {place.name}
-                </Text>
-
-                <Text
-                  style={{
-                    marginTop: 5,
-                    color: "#6B7280",
-                    fontSize: 13,
-                    lineHeight: 18,
-                  }}
-                >
-                  {place.address}
-                </Text>
-              </Pressable>
-            )
-          )}
-        </View>
+          위치 미연결 · 저장은 가능하지만 지도와 일정 날씨에는 사용할 수 없습니다.
+        </Text>
       )}
+
+      <PlaceCandidateList
+        results={placeResults}
+        pendingSelection={pendingPlaceSelection}
+        onSelect={handleSelectPlace}
+        onSaveWithoutLocation={() => void handleSave(null)}
+      />
 
       <Text
         style={{
@@ -1141,9 +1207,13 @@ export default function CreateScheduleScreen() {
         }}
       >
         <AppButton
-          title="일정 저장"
-          onPress={
-            handleSave
+          title={
+            saving
+              ? "위치 확인 중..."
+              : "일정 저장"
+          }
+          onPress={() =>
+            void handleSave()
           }
         />
       </View>
