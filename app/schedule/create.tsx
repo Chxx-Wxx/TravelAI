@@ -23,8 +23,8 @@ import AppButton from "../../components/AppButton";
 import AppInput from "../../components/AppInput";
 
 import {
-  getTrip,
-} from "../../lib/storage";
+  getCurrentTripWithRecovery,
+} from "../../services/current-trip";
 
 import {
   Schedule,
@@ -249,7 +249,7 @@ export default function CreateScheduleScreen() {
       );
 
       const trip =
-        await getTrip();
+        await getCurrentTripWithRecovery();
 
       const fullQuery =
         trip?.city
@@ -420,7 +420,7 @@ export default function CreateScheduleScreen() {
     }
 
     const trip =
-      await getTrip();
+      await getCurrentTripWithRecovery();
 
     if (!trip) {
       Alert.alert(

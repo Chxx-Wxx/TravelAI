@@ -27,8 +27,8 @@ import AppButton from "../../components/AppButton";
 import AppInput from "../../components/AppInput";
 
 import {
-  getTrip,
-} from "../../lib/storage";
+  getCurrentTripWithRecovery,
+} from "../../services/current-trip";
 
 import {
   PlaceResult,
@@ -374,7 +374,7 @@ export default function EditScheduleScreen() {
       setSearchingPlace(true);
 
       const trip =
-        await getTrip();
+        await getCurrentTripWithRecovery();
 
       const query =
         trip?.city
@@ -515,7 +515,7 @@ export default function EditScheduleScreen() {
     }
 
     const trip =
-  await getTrip();
+  await getCurrentTripWithRecovery();
 
 if (!trip) {
   Alert.alert(

@@ -1,3 +1,7 @@
+import type {
+  Trip,
+} from "../types";
+
 const API_URL =
   process.env.EXPO_PUBLIC_API_URL;
 
@@ -14,6 +18,27 @@ export type CreateTripInput = {
     name: string;
   }[];
 };
+
+export class TripNotFoundError extends Error {
+  constructor(message = "여행을 찾을 수 없습니다.") {
+    super(message);
+    this.name = "TripNotFoundError";
+  }
+}
+
+type EnsureServerTripResult = {
+  trip: Trip;
+  recovered: boolean;
+};
+
+// 같은 로컬 여행 ID에 대한 복구 요청은 하나의 생성 요청을 공유한다.
+// 성공한 Promise도 유지해서 로컬 ID 저장이 늦거나 실패해도
+// 같은 앱 실행 중 중복 여행을 만들지 않는다.
+const tripRecoveryPromises =
+  new Map<
+    string,
+    Promise<Trip>
+  >();
 
 function requireApiUrl() {
   if (!API_URL) {
@@ -61,6 +86,78 @@ export async function createTrip(
   return data.trip;
 }
 
+export async function ensureServerTrip(
+  localTrip: Trip
+): Promise<EnsureServerTripResult> {
+  const localTripId =
+    localTrip.id;
+
+  if (!localTripId) {
+    return {
+      trip: localTrip,
+      recovered: false,
+    };
+  }
+
+  try {
+    await fetchTrip(
+      localTripId
+    );
+
+    return {
+      trip: localTrip,
+      recovered: false,
+    };
+  } catch (error) {
+    // 네트워크 오류와 500 등은 복구 조건이 아니다.
+    if (
+      !(error instanceof TripNotFoundError)
+    ) {
+      throw error;
+    }
+  }
+
+  let recoveryPromise =
+    tripRecoveryPromises.get(
+      localTripId
+    );
+
+  if (!recoveryPromise) {
+    recoveryPromise = createTrip({
+      tripName: localTrip.tripName,
+      country: localTrip.country,
+      city: localTrip.city,
+      startDate: localTrip.startDate,
+      endDate: localTrip.endDate,
+      people: localTrip.people,
+      members: localTrip.members,
+    });
+
+    tripRecoveryPromises.set(
+      localTripId,
+      recoveryPromise
+    );
+
+    recoveryPromise.catch(() => {
+      // 실패한 요청만 제거해 다음 화면 진입 때 재시도할 수 있게 한다.
+      if (
+        tripRecoveryPromises.get(
+          localTripId
+        ) === recoveryPromise
+      ) {
+        tripRecoveryPromises.delete(
+          localTripId
+        );
+      }
+    });
+  }
+
+  return {
+    trip: await recoveryPromise,
+    recovered: true,
+  };
+}
+
 // 여행 전체 조회
 export async function fetchTrips() {
   const apiUrl =
@@ -98,6 +195,14 @@ export async function fetchTrip(
 
   const data =
     await response.json();
+
+  if (
+    response.status === 404
+  ) {
+    throw new TripNotFoundError(
+      data.message
+    );
+  }
 
   if (!response.ok) {
     throw new Error(

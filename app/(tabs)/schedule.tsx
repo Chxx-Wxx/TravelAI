@@ -20,8 +20,8 @@ import {
 import AppButton from "../../components/AppButton";
 
 import {
-  getTrip,
-} from "../../lib/storage";
+  getCurrentTripWithRecovery,
+} from "../../services/current-trip";
 
 import {
   deleteServerSchedule,
@@ -252,7 +252,7 @@ export default function ScheduleScreen() {
 
         // 먼저 현재 여행 정보를 가져온다.
         const tripData =
-          await getTrip();
+          await getCurrentTripWithRecovery();
 
         setTrip(tripData);
 

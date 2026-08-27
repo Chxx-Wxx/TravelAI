@@ -17,12 +17,15 @@ import {
 } from "react-native";
 
 import {
-  deleteTrip,
   getExpenses,
   getExpenseSettings,
-  getTrip,
   saveSchedules,
 } from "../../lib/storage";
+
+import {
+  deleteCurrentTripLocally,
+  getCurrentTripWithRecovery,
+} from "../../services/current-trip";
 
 import {
   fetchSchedules,
@@ -135,7 +138,7 @@ export default function HomeScreen() {
             settingsData,
           ] =
             await Promise.all([
-              getTrip(),
+              getCurrentTripWithRecovery(),
               getExpenses(),
               getExpenseSettings(),
             ]);
@@ -307,7 +310,7 @@ export default function HomeScreen() {
                 );
 
                 // 서버 삭제 성공 후 기존 로컬 데이터도 정리한다.
-                await deleteTrip();
+                await deleteCurrentTripLocally();
 
                 await saveSchedules(
                   []
