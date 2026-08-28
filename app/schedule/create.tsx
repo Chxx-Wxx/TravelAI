@@ -5,6 +5,7 @@ import DateTimePicker, {
 import { router } from "expo-router";
 
 import {
+  useRef,
   useState,
 } from "react";
 
@@ -114,6 +115,8 @@ export default function CreateScheduleScreen() {
 
   const [saving, setSaving] =
     useState(false);
+
+  const savingRef = useRef(false);
 
   const [
     category,
@@ -421,8 +424,6 @@ export default function CreateScheduleScreen() {
     tripId: string,
     linkedPlace: PlaceResult | null
   ) {
-    setSaving(true);
-
     const newSchedule: Schedule = {
       id:
         Date.now().toString(),
@@ -515,8 +516,6 @@ export default function CreateScheduleScreen() {
         "일정 저장 실패",
         "서버에 일정을 저장하지 못했습니다."
       );
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -543,10 +542,24 @@ export default function CreateScheduleScreen() {
   async function handleSave(
     placeOverride?: PlaceResult | null
   ) {
-    if (saving) {
+    if (savingRef.current) {
       return;
     }
 
+    savingRef.current = true;
+    setSaving(true);
+
+    try {
+      await performSave(placeOverride);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  async function performSave(
+    placeOverride?: PlaceResult | null
+  ) {
     if (
       !title.trim() ||
       !location.trim()
@@ -660,8 +673,6 @@ export default function CreateScheduleScreen() {
       return;
     }
 
-    setSaving(true);
-
     const query = location.trim();
 
     try {
@@ -688,11 +699,9 @@ export default function CreateScheduleScreen() {
         setPendingPlaceSelection(
           true
         );
-        setSaving(false);
         return;
       }
 
-      setSaving(false);
       offerSaveWithoutLocation(
         "정확한 장소를 찾지 못했습니다. 입력한 장소명만 저장할 수 있습니다."
       );
@@ -702,7 +711,6 @@ export default function CreateScheduleScreen() {
         error
       );
 
-      setSaving(false);
       offerSaveWithoutLocation(
         "장소 검색에 실패했습니다. 입력한 장소명만 저장할 수 있습니다."
       );
@@ -1209,9 +1217,10 @@ export default function CreateScheduleScreen() {
         <AppButton
           title={
             saving
-              ? "위치 확인 중..."
+              ? "저장 중..."
               : "일정 저장"
           }
+          disabled={saving}
           onPress={() =>
             void handleSave()
           }

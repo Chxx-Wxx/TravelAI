@@ -646,8 +646,16 @@ export default function ExpenseScreen() {
             tripData?.country
           );
 
+        setBudget("");
+        setCashBudget("");
+        setCardBudget("");
+
         setCurrency(
           defaultCurrency
+        );
+
+        setExchangeRates(
+          defaultRates
         );
 
         setRateInput(

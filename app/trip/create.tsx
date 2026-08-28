@@ -25,12 +25,12 @@ import {
 } from "../../lib/storage";
 
 import {
-  findOwnerMember,
-} from "../../lib/trip-member";
-
-import {
   createTrip,
 } from "../../services/trip";
+
+import {
+  getCurrentUser,
+} from "../../services/current-user";
 
 import {
   LegacyTripMember,
@@ -351,10 +351,17 @@ export default function CreateTripScreen() {
     };
 
     try {
+      const currentUser =
+        await getCurrentUser();
+
       // 1. Express 서버에 여행 저장
       const savedTrip =
         await createTrip(
-          trip
+          {
+            ...trip,
+            ownerUserId:
+              currentUser.id,
+          }
         );
 
       // 2. 서버에서 생성된 id까지 포함해서
@@ -363,9 +370,14 @@ export default function CreateTripScreen() {
         savedTrip
       );
 
-      const owner = findOwnerMember(
-        savedTrip.tripMembers
-      );
+      const owner =
+        savedTrip.tripMembers?.find(
+          (member) =>
+            member.userId ===
+              currentUser.id &&
+            member.role === "owner" &&
+            member.status !== "removed"
+        );
 
       if (savedTrip.id && owner) {
         await saveCurrentMemberId(

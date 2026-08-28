@@ -3,6 +3,16 @@ export interface LegacyTripMember {
   name: string;
 }
 
+export interface AppUser {
+  id: string;
+  displayName: string;
+  authProvider?: string | null;
+  authSubject?: string | null;
+  email?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export type TripMemberRole = "owner" | "member";
 
 export type TripMemberStatus =

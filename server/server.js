@@ -339,6 +339,14 @@ const TRIP_MEMBER_COLUMNS = `
   role, status, created_at, joined_at
 `;
 
+const USER_COLUMNS = `
+  id, auth_provider, auth_subject, display_name,
+  email, created_at, updated_at
+`;
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function toTrip(row) {
   return {
     id: row.id,
@@ -383,7 +391,23 @@ function toTripMember(row) {
   };
 }
 
-function normalizeTripMembers(members, tripId) {
+function toUser(row) {
+  return {
+    id: row.id,
+    authProvider: row.auth_provider,
+    authSubject: row.auth_subject,
+    displayName: row.display_name,
+    email: row.email,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeTripMembers(
+  members,
+  tripId,
+  ownerUserId = null
+) {
   const sourceMembers = Array.isArray(members)
     ? members
     : [];
@@ -404,16 +428,24 @@ function normalizeTripMembers(members, tripId) {
 
   return normalizedMembers.map((member, index) => {
     const id = randomUUID();
+    const isLinkedOwner =
+      index === 0 && Boolean(ownerUserId);
 
     return {
       id,
       tripId,
-      userId: null,
+      userId: isLinkedOwner
+        ? ownerUserId
+        : null,
       displayName: member.displayName,
       role: index === 0 ? "owner" : "member",
-      status: "placeholder",
+      status: isLinkedOwner
+        ? "active"
+        : "placeholder",
       createdAt: new Date().toISOString(),
-      joinedAt: null,
+      joinedAt: isLinkedOwner
+        ? new Date().toISOString()
+        : null,
       legacyMemberId: id,
     };
   });
@@ -460,6 +492,72 @@ function hasOwn(object, key) {
 let trips = [];
 let schedules = [];
 let tripMembers = [];
+let users = [];
+
+// ======================================================
+// 사용자 API - 로그인 전 기기 로컬 identity
+// userId는 현재 인증/권한 증명이 아니라 클라이언트 식별자다.
+// ======================================================
+
+app.post("/users/ensure", async (req, res) => {
+  try {
+    const userId = String(
+      req.body?.userId ?? ""
+    ).trim().toLowerCase();
+
+    if (!UUID_PATTERN.test(userId)) {
+      return res.status(400).json({
+        message: "올바른 사용자 ID가 필요합니다.",
+      });
+    }
+
+    if (!hasDatabaseUrl) {
+      let user = users.find(
+        (item) => item.id === userId
+      );
+
+      if (!user) {
+        const now = new Date().toISOString();
+        user = {
+          id: userId,
+          authProvider: null,
+          authSubject: null,
+          displayName: "TravelAI 사용자",
+          email: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        users.push(user);
+      }
+
+      return res.json({ user });
+    }
+
+    const result = await query(
+      `
+        INSERT INTO users (
+          id, display_name
+        )
+        VALUES ($1, $2)
+        ON CONFLICT (id)
+        DO UPDATE SET id = EXCLUDED.id
+        RETURNING ${USER_COLUMNS}
+      `,
+      [userId, "TravelAI 사용자"]
+    );
+
+    return res.json({
+      user: toUser(result.rows[0]),
+    });
+  } catch (error) {
+    console.error("사용자 확인 오류:", error);
+
+    return res.status(500).json({
+      message:
+        "사용자 확인 중 서버 오류가 발생했습니다.",
+    });
+  }
+});
 
 // ======================================================
 // 여행 API - PostgreSQL 또는 메모리 저장
@@ -475,7 +573,12 @@ app.post("/trips", async (req, res) => {
       endDate,
       people,
       members,
+      ownerUserId,
     } = req.body;
+
+    const normalizedOwnerUserId = ownerUserId
+      ? String(ownerUserId).trim().toLowerCase()
+      : null;
 
     if (
       !tripName ||
@@ -490,10 +593,40 @@ app.post("/trips", async (req, res) => {
       });
     }
 
+    if (
+      normalizedOwnerUserId &&
+      !UUID_PATTERN.test(normalizedOwnerUserId)
+    ) {
+      return res.status(400).json({
+        message: "올바른 owner 사용자 ID가 필요합니다.",
+      });
+    }
+
+    if (
+      normalizedOwnerUserId &&
+      !hasDatabaseUrl &&
+      !users.some(
+        (user) =>
+          user.id === normalizedOwnerUserId
+      )
+    ) {
+      const now = new Date().toISOString();
+      users.push({
+        id: normalizedOwnerUserId,
+        authProvider: null,
+        authSubject: null,
+        displayName: "TravelAI 사용자",
+        email: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
     const tripId = Date.now().toString();
     const newTripMembers = normalizeTripMembers(
       members,
-      tripId
+      tripId,
+      normalizedOwnerUserId
     );
     const newTrip = {
       id: tripId,
@@ -522,6 +655,22 @@ app.post("/trips", async (req, res) => {
 
       try {
         await client.query("BEGIN");
+
+        if (normalizedOwnerUserId) {
+          await client.query(
+            `
+              INSERT INTO users (
+                id, display_name
+              )
+              VALUES ($1, $2)
+              ON CONFLICT (id) DO NOTHING
+            `,
+            [
+              normalizedOwnerUserId,
+              "TravelAI 사용자",
+            ]
+          );
+        }
 
         const result = await client.query(
           `
@@ -661,6 +810,218 @@ app.get("/trips/:id/members", async (req, res) => {
     });
   }
 });
+
+app.post(
+  "/trips/:tripId/members/:memberId/claim",
+  async (req, res) => {
+    try {
+      const { tripId, memberId } = req.params;
+      const userId = String(
+        req.body?.userId ?? ""
+      ).trim().toLowerCase();
+
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({
+          message: "올바른 사용자 ID가 필요합니다.",
+        });
+      }
+
+      if (!hasDatabaseUrl) {
+        const userExists = users.some(
+          (user) => user.id === userId
+        );
+
+        if (!userExists) {
+          return res.status(404).json({
+            message:
+              "사용자 정보를 찾을 수 없습니다.",
+          });
+        }
+
+        const member = tripMembers.find(
+          (item) =>
+            item.id === memberId &&
+            item.tripId === tripId
+        );
+
+        if (!member) {
+          return res.status(404).json({
+            message:
+              "해당 여행 멤버를 찾을 수 없습니다.",
+          });
+        }
+
+        if (member.status === "removed") {
+          return res.status(409).json({
+            message:
+              "삭제된 여행 멤버는 연결할 수 없습니다.",
+          });
+        }
+
+        if (
+          member.userId &&
+          member.userId !== userId
+        ) {
+          return res.status(409).json({
+            message:
+              "이미 다른 사용자와 연결된 여행 멤버입니다.",
+          });
+        }
+
+        const duplicateMember = tripMembers.find(
+          (item) =>
+            item.tripId === tripId &&
+            item.id !== memberId &&
+            item.userId === userId &&
+            item.status !== "removed"
+        );
+
+        if (duplicateMember) {
+          return res.status(409).json({
+            message:
+              "현재 사용자는 이미 이 여행의 다른 멤버와 연결되어 있습니다.",
+          });
+        }
+
+        member.userId = userId;
+        member.status = "active";
+        member.joinedAt ??=
+          new Date().toISOString();
+
+        const {
+          legacyMemberId,
+          ...responseMember
+        } = member;
+
+        return res.json({
+          member: responseMember,
+        });
+      }
+
+      const client = await pool.connect();
+
+      try {
+        await client.query("BEGIN");
+
+        const userResult = await client.query(
+          "SELECT id FROM users WHERE id = $1",
+          [userId]
+        );
+
+        if (userResult.rowCount === 0) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({
+            message:
+              "사용자 정보를 찾을 수 없습니다.",
+          });
+        }
+
+        const memberResult = await client.query(
+          `
+            SELECT ${TRIP_MEMBER_COLUMNS}
+            FROM trip_members
+            WHERE id = $1 AND trip_id = $2
+            FOR UPDATE
+          `,
+          [memberId, tripId]
+        );
+
+        if (memberResult.rowCount === 0) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({
+            message:
+              "해당 여행 멤버를 찾을 수 없습니다.",
+          });
+        }
+
+        const member = memberResult.rows[0];
+
+        if (member.status === "removed") {
+          await client.query("ROLLBACK");
+          return res.status(409).json({
+            message:
+              "삭제된 여행 멤버는 연결할 수 없습니다.",
+          });
+        }
+
+        if (
+          member.user_id &&
+          member.user_id !== userId
+        ) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({
+            message:
+              "이미 다른 사용자와 연결된 여행 멤버입니다.",
+          });
+        }
+
+        const duplicateResult = await client.query(
+          `
+            SELECT id
+            FROM trip_members
+            WHERE trip_id = $1
+              AND user_id = $2
+              AND id <> $3
+              AND status <> 'removed'
+            LIMIT 1
+          `,
+          [tripId, userId, memberId]
+        );
+
+        if (duplicateResult.rowCount > 0) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({
+            message:
+              "현재 사용자는 이미 이 여행의 다른 멤버와 연결되어 있습니다.",
+          });
+        }
+
+        const updatedResult = await client.query(
+          `
+            UPDATE trip_members
+            SET user_id = $1,
+              status = 'active',
+              joined_at = COALESCE(joined_at, NOW())
+            WHERE id = $2 AND trip_id = $3
+            RETURNING ${TRIP_MEMBER_COLUMNS}
+          `,
+          [userId, memberId, tripId]
+        );
+
+        await client.query("COMMIT");
+
+        return res.json({
+          member: toTripMember(
+            updatedResult.rows[0]
+          ),
+        });
+      } catch (error) {
+        await client.query("ROLLBACK");
+
+        if (error.code === "23505") {
+          return res.status(409).json({
+            message:
+              "현재 사용자는 이미 이 여행의 다른 멤버와 연결되어 있습니다.",
+          });
+        }
+
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.error(
+        "여행 멤버 연결 오류:",
+        error
+      );
+
+      return res.status(500).json({
+        message:
+          "여행 멤버 연결 중 서버 오류가 발생했습니다.",
+      });
+    }
+  }
+);
 
 app.get("/trips/:id", async (req, res) => {
   try {

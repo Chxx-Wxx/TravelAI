@@ -9,6 +9,7 @@ import {
 
 import {
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -132,6 +133,8 @@ export default function EditScheduleScreen() {
 
   const [saving, setSaving] =
     useState(false);
+
+  const savingRef = useRef(false);
 
   const [
     originalPlace,
@@ -606,8 +609,6 @@ export default function EditScheduleScreen() {
       return;
     }
 
-    setSaving(true);
-
     try {
       await updateServerSchedule(
         id,
@@ -661,8 +662,6 @@ export default function EditScheduleScreen() {
         "수정 실패",
         "일정을 수정하지 못했습니다."
       );
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -693,7 +692,25 @@ export default function EditScheduleScreen() {
       return;
     }
 
-    if (saving) {
+    if (savingRef.current) {
+      return;
+    }
+
+    savingRef.current = true;
+    setSaving(true);
+
+    try {
+      await performUpdate(placeOverride);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  async function performUpdate(
+    placeOverride?: PlaceResult | null
+  ) {
+    if (!id) {
       return;
     }
 
@@ -809,8 +826,6 @@ const tripStart =
       return;
     }
 
-    setSaving(true);
-
     const query = location.trim();
 
     try {
@@ -835,11 +850,9 @@ const tripStart =
       if (results.length > 0) {
         showPlaceResults(query, results);
         setPendingPlaceSelection(true);
-        setSaving(false);
         return;
       }
 
-      setSaving(false);
       offerUpdateWithoutLocation(
         "정확한 장소를 찾지 못했습니다. 입력한 장소명만 저장할 수 있습니다."
       );
@@ -849,7 +862,6 @@ const tripStart =
         error
       );
 
-      setSaving(false);
       offerUpdateWithoutLocation(
         "장소 검색에 실패했습니다. 입력한 장소명만 저장할 수 있습니다."
       );
@@ -1331,9 +1343,10 @@ const tripStart =
         <AppButton
           title={
             saving
-              ? "위치 확인 중..."
+              ? "저장 중..."
               : "수정 내용 저장"
           }
+          disabled={saving}
           onPress={() =>
             void handleUpdate()
           }

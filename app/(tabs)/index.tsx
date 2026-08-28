@@ -19,7 +19,6 @@ import {
 import {
   getExpenses,
   getExpenseSettings,
-  saveSchedules,
 } from "../../lib/storage";
 
 import {
@@ -150,16 +149,15 @@ export default function HomeScreen() {
     useCallback(
       async () => {
         try {
+          const tripData =
+            await getCurrentTripWithRecovery();
           const [
-            tripData,
             expenseData,
             settingsData,
-          ] =
-            await Promise.all([
-              getCurrentTripWithRecovery(),
-              getExpenses(),
-              getExpenseSettings(),
-            ]);
+          ] = await Promise.all([
+            getExpenses(),
+            getExpenseSettings(),
+          ]);
 
           setTrip(
             tripData
@@ -382,10 +380,8 @@ export default function HomeScreen() {
                 );
 
                 // 서버 삭제 성공 후 기존 로컬 데이터도 정리한다.
-                await deleteCurrentTripLocally();
-
-                await saveSchedules(
-                  []
+                await deleteCurrentTripLocally(
+                  tripId
                 );
 
                 setTrip(
@@ -394,6 +390,14 @@ export default function HomeScreen() {
 
                 setTodaySchedules(
                   []
+                );
+
+                setExpenses(
+                  []
+                );
+
+                setExpenseSettings(
+                  null
                 );
 
                 setNextSchedule(

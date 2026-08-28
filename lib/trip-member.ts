@@ -4,9 +4,10 @@ import type {
 
 export function formatMemberName(
   member: TripMember,
-  currentMemberId?: string | null
+  currentUserId?: string | null
 ) {
-  return member.id === currentMemberId
+  return currentUserId &&
+    member.userId === currentUserId
     ? "나"
     : member.displayName;
 }

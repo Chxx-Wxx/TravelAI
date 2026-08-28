@@ -13,6 +13,7 @@ export type CreateTripInput = {
   startDate: string;
   endDate: string;
   people: string;
+  ownerUserId?: string;
 
   members?: {
     id?: string;
@@ -54,7 +55,7 @@ function requireApiUrl() {
 // 여행 생성
 export async function createTrip(
   trip: CreateTripInput
-) {
+): Promise<Trip> {
   const apiUrl =
     requireApiUrl();
 
@@ -88,7 +89,8 @@ export async function createTrip(
 }
 
 export async function ensureServerTrip(
-  localTrip: Trip
+  localTrip: Trip,
+  ownerUserId: string
 ): Promise<EnsureServerTripResult> {
   const localTripId =
     localTrip.id;
@@ -132,6 +134,7 @@ export async function ensureServerTrip(
       endDate: localTrip.endDate,
       people: localTrip.people,
       members: localTrip.members,
+      ownerUserId,
     });
 
     tripRecoveryPromises.set(
@@ -185,7 +188,7 @@ export async function fetchTrips() {
 // 여행 하나 조회
 export async function fetchTrip(
   id: string
-) {
+): Promise<Trip> {
   const apiUrl =
     requireApiUrl();
 
@@ -259,6 +262,35 @@ export async function fetchTripMembers(
   const data = await response.json();
 
   return data.members ?? [];
+}
+
+export async function claimTripMember(
+  tripId: string,
+  memberId: string,
+  userId: string
+): Promise<TripMember> {
+  const apiUrl = requireApiUrl();
+  const response = await fetch(
+    `${apiUrl}/trips/${tripId}/members/${memberId}/claim`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/json",
+      },
+      body: JSON.stringify({ userId }),
+    }
+  );
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      data.message ??
+        "여행 멤버를 현재 사용자와 연결하지 못했습니다."
+    );
+  }
+
+  return data.member;
 }
 
 // 여행 수정

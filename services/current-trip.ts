@@ -1,61 +1,127 @@
 import {
   deleteCurrentMemberId,
-  deleteTrip,
+  deleteTripLocalData,
   getCurrentMemberId,
   getTrip,
+  moveTripLocalData,
   saveCurrentMemberId,
   saveTrip,
 } from "../lib/storage";
 
-import {
-  findOwnerMember,
-} from "../lib/trip-member";
-
 import type {
   Trip,
+  TripMember,
 } from "../types";
 
 import {
+  claimTripMember,
   deleteServerTrip,
   ensureServerTrip,
   fetchTripMembers,
 } from "./trip";
 
+import {
+  getCurrentUser,
+} from "./current-user";
+
 let localTripRevision = 0;
 
 async function ensureStoredCurrentMember(
-  trip: Trip
+  trip: Trip,
+  currentUserId: string
 ) {
   if (!trip.id) {
-    return;
-  }
-
-  const storedMemberId =
-    await getCurrentMemberId(trip.id);
-
-  if (storedMemberId) {
-    return;
+    return null;
   }
 
   try {
-    const members = trip.tripMembers?.length
-      ? trip.tripMembers
-      : await fetchTripMembers(trip.id);
-    const owner = findOwnerMember(members);
+    let members =
+      await fetchTripMembers(trip.id);
+    const linkedMember = members.find(
+      (member) =>
+        member.userId === currentUserId &&
+        member.status !== "removed"
+    );
 
-    if (owner) {
+    if (linkedMember) {
       await saveCurrentMemberId(
         trip.id,
-        owner.id
+        linkedMember.id
       );
+
+      return members;
     }
+
+    const storedMemberId =
+      await getCurrentMemberId(trip.id);
+
+    if (!storedMemberId) {
+      return members;
+    }
+
+    const legacyMember = members.find(
+      (member) =>
+        member.id === storedMemberId
+    );
+
+    if (
+      !legacyMember ||
+      legacyMember.status === "removed"
+    ) {
+      return members;
+    }
+
+    const claimedMember =
+      await claimTripMember(
+        trip.id,
+        legacyMember.id,
+        currentUserId
+      );
+
+    members = members.map(
+      (member): TripMember =>
+        member.id === claimedMember.id
+          ? claimedMember
+          : member
+    );
+
+    await saveCurrentMemberId(
+      trip.id,
+      claimedMember.id
+    );
+
+    return members;
   } catch (error) {
     // A member lookup failure must not make the current trip unusable.
     console.error(
       "현재 여행 멤버 확인 실패:",
       error
     );
+
+    return null;
   }
+}
+
+async function withCurrentMembers(
+  trip: Trip,
+  currentUserId: string
+) {
+  const tripMembers =
+    await ensureStoredCurrentMember(
+      trip,
+      currentUserId
+    );
+
+  if (!tripMembers) {
+    return trip;
+  }
+
+  const updatedTrip = {
+    ...trip,
+    tripMembers,
+  };
+
+  return updatedTrip;
 }
 
 async function removeUnusedRecoveredTrip(
@@ -85,13 +151,16 @@ export async function getCurrentTripWithRecovery(): Promise<Trip | null> {
     localTrip.id;
   const revisionAtStart =
     localTripRevision;
-
+  let currentUser;
   let result;
 
   try {
+    currentUser =
+      await getCurrentUser();
     result =
       await ensureServerTrip(
-        localTrip
+        localTrip,
+        currentUser.id
       );
   } catch (error) {
     // 404 이외의 오류에서는 새 여행을 만들지 않고 로컬 여행을 유지한다.
@@ -104,10 +173,10 @@ export async function getCurrentTripWithRecovery(): Promise<Trip | null> {
   }
 
   if (!result.recovered) {
-    await ensureStoredCurrentMember(
-      localTrip
+    return withCurrentMembers(
+      localTrip,
+      currentUser.id
     );
-    return localTrip;
   }
 
   const latestLocalTrip =
@@ -115,10 +184,14 @@ export async function getCurrentTripWithRecovery(): Promise<Trip | null> {
 
   // 다른 화면이 같은 복구 결과를 먼저 저장했다면 그대로 사용한다.
   if (
-    latestLocalTrip?.id ===
+    latestLocalTrip &&
+    latestLocalTrip.id ===
     result.trip.id
   ) {
-    return latestLocalTrip;
+    return withCurrentMembers(
+      latestLocalTrip,
+      currentUser.id
+    );
   }
 
   // 복구 중 여행이 삭제되거나 교체됐다면 로컬 여행을 되살리지 않는다.
@@ -135,6 +208,13 @@ export async function getCurrentTripWithRecovery(): Promise<Trip | null> {
     return latestLocalTrip;
   }
 
+  if (result.trip.id) {
+    await moveTripLocalData(
+      sourceTripId,
+      result.trip.id
+    );
+  }
+
   await saveTrip(result.trip);
 
   if (
@@ -146,19 +226,20 @@ export async function getCurrentTripWithRecovery(): Promise<Trip | null> {
     );
   }
 
-  await ensureStoredCurrentMember(
-    result.trip
-  );
-
   console.info(
     "현재 여행을 서버에 자동 복구했습니다."
   );
 
-  return result.trip;
+  return withCurrentMembers(
+    result.trip,
+    currentUser.id
+  );
 }
 
-export async function deleteCurrentTripLocally() {
+export async function deleteCurrentTripLocally(
+  tripId: string
+) {
   // 진행 중인 복구 결과가 삭제 후 로컬에 저장되지 않게 무효화한다.
   localTripRevision += 1;
-  await deleteTrip();
+  await deleteTripLocalData(tripId);
 }
