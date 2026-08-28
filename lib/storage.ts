@@ -1,5 +1,11 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import type {
+  Expense,
+  SettlementPayment,
+  Trip,
+} from "../types";
+
 const TRIP_KEY = "@travelai_trip";
 const SCHEDULE_KEY = "@travelai_schedule";
 const EXPENSE_KEY = "@travelai_expenses";
@@ -346,6 +352,30 @@ export async function deleteTrip() {
   }
 }
 
+export async function saveJoinedTrip(
+  trip: Trip,
+  memberId: string
+) {
+  if (!trip.id) {
+    throw new Error(
+      "저장할 여행 ID가 없습니다."
+    );
+  }
+
+  const ids = await getCurrentMemberIds();
+  ids[trip.id] = memberId;
+
+  // 서버의 claim 및 최신 데이터 검증이 모두 끝난 뒤 현재 여행과
+  // 해당 여행의 내 memberId를 같은 배치로 반영한다.
+  await AsyncStorage.multiSet([
+    [TRIP_KEY, JSON.stringify(trip)],
+    [
+      CURRENT_MEMBER_IDS_KEY,
+      JSON.stringify(ids),
+    ],
+  ]);
+}
+
 // 일정
 export async function saveSchedules(
   schedules: any[],
@@ -424,7 +454,7 @@ export async function deleteSchedule(
 
 // 지출
 export async function saveExpenses(
-  expenses: any[],
+  expenses: Expense[],
   tripId?: string
 ) {
   await saveTripScopedValue(
@@ -437,7 +467,7 @@ export async function saveExpenses(
 export async function getExpenses(
   tripId?: string
 ) {
-  return getTripScopedValue<any[]>(
+  return getTripScopedValue<Expense[]>(
     EXPENSE_KEY,
     [],
     tripId
@@ -500,7 +530,7 @@ export async function deleteExpenseSettings(
 }
 
 export async function saveSettlementPayments(
-  payments: any[],
+  payments: SettlementPayment[],
   tripId?: string
 ) {
   await saveTripScopedValue(
@@ -513,7 +543,7 @@ export async function saveSettlementPayments(
 export async function getSettlementPayments(
   tripId?: string
 ) {
-  return getTripScopedValue<any[]>(
+  return getTripScopedValue<SettlementPayment[]>(
     SETTLEMENT_PAYMENT_KEY,
     [],
     tripId

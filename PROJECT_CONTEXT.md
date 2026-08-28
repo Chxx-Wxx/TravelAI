@@ -268,6 +268,17 @@ PUT /trips/:id
 DELETE /trips/:id
 ```
 
+### 사용자/여행 멤버
+
+```text
+POST /users/ensure
+GET /trips/:id/members
+POST /trips/:tripId/members/:memberId/claim
+```
+
+`/users/ensure`는 로그인 도입 전 기기별 user identity를 서버에 보장한다.
+member claim은 이름이 아니라 `tripId + memberId + userId`로 처리한다.
+
 ### 일정
 
 ```text
@@ -300,25 +311,36 @@ Singapore
 
 * `npm run db:init`을 통한 스키마 초기화
 * `trips` 테이블 생성
+* `users` 테이블 생성
+* `trip_members` 테이블 생성
 * `schedules` 테이블 생성
 * 여행 REST CRUD
 * 일정 REST CRUD
 * 존재하지 않는 여행에 일정 생성 차단
 * 여행 삭제 시 소속 일정 `ON DELETE CASCADE`
+* 여행 삭제 시 소속 `trip_members`도 `ON DELETE CASCADE`
+* 사용자 삭제 시 `trip_members.user_id`는 `ON DELETE SET NULL`
 * Express 서버 재시작 후 여행/일정 데이터 유지
 
 실제 `DATABASE_URL` 값은 문서와 코드에 기록하지 않는다.
 
 ### In-memory development fallback
 
-`DATABASE_URL`이 없으면 기존 메모리 기반 `trips` / `schedules` 저장 방식으로
+`DATABASE_URL`이 없으면 메모리 기반 `trips` / `schedules` / `users` /
+`trip_members` 저장 방식으로
 fallback하며 서버 실행을 중단하지 않는다.
 
 이 모드에서는 서버를 종료하면 여행과 일정 데이터가 사라진다.
 AsyncStorage에 현재 여행 정보가 남아 있고 서버에서 해당 여행 ID가 404이면,
 앱이 로컬 여행 정보로 서버 여행을 한 번 자동 복구하고 새 ID를 저장한다.
+현재 기기의 userId가 복구 여행의 owner로 연결되며 새 tripMemberId에 맞춰
+current member mapping도 갱신된다.
 
 서버 재시작으로 사라진 일정은 자동 복구하지 않는다.
+네트워크 오류나 500 응답에서는 여행을 재생성하지 않는다.
+동일 여행의 중복 복구는 shared promise/single-flight로 막고,
+삭제가 시작되면 진행 중인 복구 결과가 현재 여행을 다시 덮어쓰지 않도록 무효화한다.
+PostgreSQL mode에서는 드문 상황이지만 local/server mismatch 보호용으로 유지한다.
 
 ### 앱 내부 저장 위치
 
@@ -326,15 +348,30 @@ AsyncStorage에 현재 여행 정보가 남아 있고 서버에서 해당 여행
 
 * 여행: Express 서버에 저장하고 현재 여행 정보는 AsyncStorage에도 저장
 * 일정: Express 서버의 PostgreSQL 또는 메모리 저장소에서 조회/생성/수정/삭제
-* 지출/예산/정산: AsyncStorage
-* 준비물 체크리스트: AsyncStorage
+* 지출/예산/정산: tripId별 AsyncStorage
+* 준비물 체크리스트: tripId별 AsyncStorage
+* 일정 로컬 저장 helper: tripId별 envelope지만 화면의 완성된 오프라인 읽기 캐시는 아직 아님
+
+trip-scoped envelope 적용 대상:
+
+* 예산/여행 자금 설정
+* 지출
+* 정산 완료 기록
+* 준비물
+* 일정 캐시
+
+구형 전역 값은 최초 접근 시 당시 current trip 항목으로 자동 이전한다.
 
 일정의 AsyncStorage 오프라인 읽기 캐시는 아직 구현되지 않았다.
 따라서 서버 또는 네트워크에 연결할 수 없을 때 기존 일정을 읽는 기능은 향후 작업이다.
 
-홈의 `여행 삭제`는 서버의 `DELETE /trips/:id`를 호출한 뒤
-AsyncStorage의 현재 여행 정보도 삭제한다.
-PostgreSQL에서는 소속 일정이 CASCADE로 함께 삭제된다.
+홈의 `여행 삭제`는 서버의 `DELETE /trips/:id` 성공 또는 기존 정책상
+404 already-deleted 응답 후 해당 tripId의 current trip, 일정 캐시, 예산,
+지출, 정산, 준비물, current member mapping만 삭제한다.
+다른 여행의 로컬 데이터와 `@travelai_user_id`는 유지하며
+`AsyncStorage.clear()`는 사용하지 않는다. 네트워크 오류나 500에서는 로컬 cleanup을 하지 않는다.
+PostgreSQL에서는 선택한 여행의 일정과 trip_members만 CASCADE로 삭제되고,
+서버의 users와 다른 여행의 trip_members는 유지된다.
 
 서버 API는 여러 여행을 저장하고 조회할 수 있지만,
 현재 프론트엔드는 AsyncStorage에 저장된 한 개의 현재 여행을 사용한다.
@@ -354,8 +391,45 @@ PostgreSQL에서는 소속 일정이 CASCADE로 함께 삭제된다.
 * endDate
 * people
 * members
+* tripMembers
 
 여행 생성 기능은 이미 테스트되었다.
+
+### 사용자와 여행 멤버 identity
+
+로그인 전 단계의 기기별 영구 userId는 AsyncStorage의
+`@travelai_user_id`에 저장된다.
+
+* `users.id`: 실제 사용자 identity
+* `trip_members.id`: 여행별 멤버 identity
+* `trip_members.user_id`: 사용자와 여행 멤버의 연결
+
+한 사용자는 여행마다 서로 다른 tripMemberId를 갖는다. 이름 문자열은 identity가 아니다.
+UI의 `나`는 `trip_members.user_id === currentUserId`인 멤버로 판단하며,
+이름이나 첫 번째 배열 항목을 기준으로 판단하지 않는다.
+
+새 여행에서는 owner가 현재 userId에 연결된 `active` 상태로 생성되고
+`joined_at`이 설정된다. 나머지 동행자는 `user_id = null`, `role = member`,
+`status = placeholder`로 생성된다. 인원수는 2명에 고정되지 않는다.
+
+identity/status/role/userId의 source of truth는 `trip_members`다.
+`trips.members` JSONB는 기존 화면 호환용 legacy snapshot으로 유지한다.
+
+### Member claim과 여행 참여
+
+claim API는 여행과 멤버 소속을 검증하고 placeholder만 연결한다.
+동일 user와 동일 member의 재요청은 idempotent하며, 이미 다른 user에게 연결된
+멤버 또는 같은 여행의 다른 active 멤버에 연결된 user는 409를 반환한다.
+성공 시 `active`와 `joined_at`을 설정하며 PostgreSQL transaction과
+in-memory fallback에 같은 정책을 적용한다.
+
+프론트의 `joinTripAsMember(tripId, memberId)` 흐름은 user ensure, claim,
+최신 trip과 trip members 재조회, user/member 연결 검증을 마친 뒤에만
+current trip과 `tripId → currentMemberId` mapping을 배치 저장한다.
+개발용 join 화면은 실제 초대 UX가 아니라 Expo Go 검증용 `__DEV__` 화면이다.
+
+아직 인증은 없으므로 tripId와 memberId를 아는 클라이언트가 claim을 시도할 수 있다.
+실제 초대 링크, QR, 초대 token, 로그인/OAuth 기반 권한 검증은 미구현이다.
 
 ---
 
@@ -462,6 +536,11 @@ Google Places에서 장소를 선택하면 가능하면:
 * 저장 시 후보를 고르지 않았으면 최종 검색을 한 번 실행하고, 명확하면 자동 연결하며 애매하면 후보 선택 또는 위치 없이 저장을 제공한다.
 * 일정 수정에서는 기존 장소명과 같으면 기존 `placeId`, 주소, 좌표를 재사용한다.
 * 다른 장소로 바꾸려면 `다시 검색` 후 새 후보를 선택한다.
+
+일정 생성/수정 저장은 React state와 동기 `useRef` 잠금을 함께 사용한다.
+저장 요청이 진행 중이면 추가 탭을 즉시 무시하고 저장 버튼을 비활성화하며
+요청 lifecycle 동안 버튼 문구를 `저장 중...`으로 표시한다.
+따라서 아주 빠르게 연타해도 생성 POST 또는 수정 PUT 요청은 한 번만 실행된다.
 
 ---
 
@@ -586,13 +665,18 @@ languageCode: ko
 regionCode: JP
 ```
 
-도쿄 중심 50km 고정 `locationBias`는 제거되었다.
+도쿄 중심 고정 `locationBias`는 제거되었다.
 검색 기준 위치는 다음 순서로 결정한다.
 
-1. 실제 기기의 현재 위치
-2. 수정 중인 기존 일정 위치 또는 선택 날짜에서 시간이 가장 가까운 일정 위치
-3. 여행 대표 도시 좌표
-4. 모두 없으면 location bias 없이 검색
+1. 수정 중인 일정에 이미 연결된 좌표
+2. 선택 날짜에서 입력 시간과 가장 가까운 기존 일정 좌표
+3. 실제 기기의 현재 위치
+4. 여행 대표 도시 좌표
+5. 모두 없으면 location bias 없이 검색
+
+기준 좌표가 있으면 서버가 반경 20km의 원형 `locationBias`로 전달한다.
+이는 검색 결과를 해당 지역에 가깝게 유도하는 설정이지 결과를 반경 안으로 제한하는
+`locationRestriction`이 아니므로, 구체적인 원거리 장소 검색 결과도 나올 수 있다.
 
 위치 권한은 앱 시작 시 요청하지 않고 장소 자동완성이 실제로 필요할 때만 요청한다.
 권한이 거부되거나 현재 위치 조회에 실패해도 일정/여행 도시 기준으로 fallback하며,
@@ -699,13 +783,15 @@ Google 검색 관련성을 우선하고 이름 일치 수준이 같은 후보 �
 다음 일정 카드에는 장소, 일정 시간, 해당 시간대 기온, 강수확률,
 날씨 코드 기반 한글 설명과 아이콘을 표시한다.
 좌표가 없는 일정은 좌표 기반 예보 대상에서 제외하며 홈 전체 오류를 만들지 않는다.
-일정이 없거나 좌표/시간대 예보를 사용할 수 없으면 여행 대표 도시 현재 날씨로 fallback한다.
-과거 일정이나 forecast 제공 범위 밖 일정에는 현재 날씨를 대신 표시하지 않고 명확한 비가용 상태를 사용한다.
+일정이 없으면 여행 대표 도시의 현재 날씨를 별도 홈 카드로 사용할 수 있다.
+다음 일정이 있지만 좌표가 없거나 과거 일정이거나 Open-Meteo의 최대 16일 예보 범위 밖이면
+그 일정의 예보를 현재 날씨로 대체하지 않고 원인을 알 수 있는 비가용 상태를 표시한다.
 
 현재 날씨 요청은 Express 서버를 거치지 않고 프론트엔드에서
 Open-Meteo API를 직접 호출한다.
 
-동일 좌표와 날짜의 hourly forecast 요청은 10분 캐시로 재사용해 중복 호출을 줄인다.
+동일 좌표와 날짜의 hourly forecast 요청은 좌표를 소수점 넷째 자리로 반올림한 키와 날짜를 사용해
+10분 캐시로 재사용한다.
 
 ---
 
@@ -790,7 +876,45 @@ TravelAI의 장기 핵심 기능 중 하나다.
 * 정산 완료 및 완료 취소
 * 전체 기록과 삭제
 
-지출, 예산 설정, 정산 완료 내역은 현재 AsyncStorage에 저장된다.
+지출, 예산 설정, 정산 완료 내역은 현재 tripId별 AsyncStorage에 저장된다.
+서버 DB에는 아직 동기화하지 않는다.
+
+### 지출 멤버 identity
+
+새 지출 데이터는 이름이 아니라 여행 멤버 ID를 사용한다.
+
+* 공동 지출 결제자: `paidByMemberId`
+* 공동 지출 참여자: `participantMemberIds`
+* 대여금 대여자/차용자: `lenderMemberId`, `borrowerMemberId`
+* 정산 송금 방향: `fromMemberId`, `toMemberId`
+
+선택 가능한 멤버의 기준은 서버의 `trip_members`이며 placeholder도 참여자로 선택할 수 있다.
+현재 기기의 `currentMemberId`와 비교해 UI의 `나`를 결정하고, `removed` 상태이거나 더 이상 존재하지 않는
+멤버는 새 기록의 선택지에서 제외한다. 이름은 표시용일 뿐 identity로 사용하지 않는다.
+
+기존 데이터의 이름 기반 필드는 호환 읽기를 위해 유지한다. 새 memberId 기반 ledger와 legacy ledger는
+별도로 계산하며, 불확실한 이름을 임의로 특정 memberId로 변환하지 않는다.
+
+### 환율 snapshot과 표시
+
+외화 지출은 저장 당시의 `localAmount`, `currency`, `exchangeRate`, `krwAmount`를 snapshot으로 보존한다.
+JPY 환율 입력은 100엔당 원화 기준이다. 원화 기록에서는 같은 원화 금액과 환율 설명을 반복하지 않고,
+외화 기록에서만 원화 환산액과 저장 당시 환율을 보조 정보로 표시한다.
+
+### 지출/정산 UI
+
+공동 지출은 결제자, 참여자별 몫과 총액을 구분해 표시하고, 대여금은 `currentMemberId` 관점에서
+누가 누구에게 빌려줬는지 자연어로 표시한다. 기록 삭제는 주요 액션보다 작게 배치한다.
+
+최종 정산 카드는 현재 사용자 관점의 송금/수령 방향과 최종 금액을 한 번 강하게 표시한다.
+계산 근거가 하나뿐이고 최종 금액과 같으면 작은 단일 근거만 보여주며, 실제 가감 관계가 있을 때만
+여러 breakdown 행과 최종 행을 표시한다. 버튼 문구는 금액을 반복하지 않고 `정산 완료`를 사용한다.
+이 표현 개선은 기존 balance/settlement 계산 의미를 변경하지 않는다.
+
+최종 정산 완료 기록에는 필요한 경우 어떤 원본 관계를 해결했는지 나타내는 `source`와
+`resolvedRelations`가 함께 저장된다. 공동 지출의 참여자→결제자 및 대여금의 차용자→대여자 관계를
+memberId 쌍 단위로 연결해 개별 기록의 미정산/일부 정산/정산 완료 표시와 동기화한다.
+정산 완료를 취소하면 그 완료 기록이 해결한 관계만 다시 미정산 상태로 돌아간다.
 
 금액 요약과 잔액 출력에는 천 단위 쉼표가 적용되어 있다.
 
@@ -822,15 +946,10 @@ TravelAI의 장기 핵심 기능 중 하나다.
 
 향후 고려 기능:
 
-* 원화
-* 엔화
-* 환율
-* 현금
-* 카드
-* 남은 여행 자금
-* 개인별 지출
-* 공동 지출
-* 여행 종료 후 정산
+* 지출/정산의 서버 동기화와 DB persistence
+* 여러 기기에서 같은 여행 지출을 안전하게 공유하는 충돌 처리
+* 정식 인증과 권한 검증
+* 여행 종료 후 지출 요약/리포트
 
 실제 여행 중 빠르게 확인할 수 있는 형태가 중요하다.
 
@@ -896,17 +1015,10 @@ TravelAI의 장기 핵심 기능 중 하나다.
 
 ## 33. 여러 명 여행
 
-현재 실제 여행은 2명이다.
-
-향후:
-
-* 여러 명
-* 친구 가족 여행
-* 다른 그룹
-
-등도 고려할 수 있다.
-
-정산과 멤버 데이터 구조는 가능한 경우 확장 가능성을 유지한다.
+현재 첫 실제 사용 시나리오는 2명이지만 멤버/지출 구조는 2명에 고정하지 않는다.
+한 사용자는 여행마다 별도의 `trip_members.id`를 가지며, 공동 지출과 정산도 memberId 배열/관계로
+여러 명을 표현한다. 개발용 claim 흐름까지 구현되어 있으나 실제 초대 링크/QR, 초대 token,
+로그인/OAuth와 서버 권한 검증은 아직 구현되지 않았다.
 
 ---
 
@@ -1134,22 +1246,22 @@ TravelAI는 여행 중 자주 보는 앱이므로:
 * Open-Meteo 날씨 데이터/API 연동
 * 준비물 체크리스트
 
-현재 코드 기준으로 남아 있는 가까운 작업 후보:
+현재 코드 기준 미완성 항목:
 
-1. 일정 AsyncStorage 오프라인 읽기 캐시
-2. Cloud Run 백엔드 배포
-3. 지도 경로 선/이동 시간/경로 최적화
-4. 실제 AI API 연동
-5. 여러 여행 선택/관리 UI
-
-장기 미완성 기능:
-
+* 실제 초대 링크/QR 및 초대 token
+* 로그인/회원가입, OAuth, 인증과 서버 권한 검증
+* shared expense의 여러 기기 간 서버 동기화
+* 지출/정산/준비물의 DB persistence
+* 지도 경로 선, 이동 거리/시간, 라우팅과 경로 최적화
+* 대중교통/도보 routing
+* 주변 장소 발견/추천
+* 실제 AI API 연동
+* Cloud Run 백엔드 배포
+* 일정 AsyncStorage 오프라인 읽기 캐시의 화면 연동 완성
+* 여러 여행 선택/관리 UX
 * 방문 도장/방문 기록
-* 여행 종료 및 여행 요약
-* 완전한 다크 모드
-* 여러 여행 선택/관리 UI
-* Cloud Run 배포
-* 일정 오프라인 읽기 캐시
+* 여행 종료, 기록 보관, 요약/리포트
+* 전체 화면의 라이트/다크 모드 마감
 
 우선순위는 사용자의 새 요청이 있으면 그 요청을 먼저 따른다.
 

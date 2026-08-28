@@ -21,11 +21,26 @@ import {
   getExpenseSettings,
   getExpenses,
   getSettlementPayments,
-  getTrip,
+  getStoredUserId,
   saveExpenseSettings,
   saveExpenses,
   saveSettlementPayments,
 } from "../../lib/storage";
+
+import {
+  calculateExpenseSettlements,
+  getExpenseMemberOptions,
+  getExpensePartyLabel,
+  getExpenseSettlementRelations,
+  getExpenseSettlementStatus,
+  getRelationsResolvedBySettlement,
+  getResolvedSettlementRelationIds,
+  type ExpenseSettlement,
+} from "../../lib/expense-member";
+
+import {
+  getCurrentTripWithRecovery,
+} from "../../services/current-trip";
 
 import {
   CurrencyCode,
@@ -355,6 +370,9 @@ export default function ExpenseScreen() {
   const [trip, setTrip] =
     useState<Trip | null>(null);
 
+  const [currentUserId, setCurrentUserId] =
+    useState<string | null>(null);
+
   const [expenses, setExpenses] =
     useState<
       ExpenseWithSnapshot[]
@@ -406,61 +424,65 @@ export default function ExpenseScreen() {
     "personal"
   );
 
-  const [payer, setPayer] =
-    useState("나");
-
-  const [
-    participants,
-    setParticipants,
-  ] = useState<string[]>(["나"]);
-
-  const [lender, setLender] =
-    useState("나");
-
-  const [borrower, setBorrower] =
+  const [payerMemberId, setPayerMemberId] =
     useState("");
 
-  function getTripMembers(
-    tripData: Trip | null
-  ) {
-    if (!tripData) {
-      return ["나"];
-    }
+  const [
+    participantMemberIds,
+    setParticipantMemberIds,
+  ] = useState<string[]>([]);
 
-    if (
-      tripData.members &&
-      tripData.members.length > 0
-    ) {
-      return tripData.members.map(
-        (member) => member.name
-      );
-    }
+  const [lenderMemberId, setLenderMemberId] =
+    useState("");
 
-    const peopleCount =
-      Number(tripData.people) || 1;
+  const [borrowerMemberId, setBorrowerMemberId] =
+    useState("");
 
-    const names = ["나"];
-
-    for (
-      let i = 1;
-      i < peopleCount;
-      i++
-    ) {
-      names.push(`친구 ${i}`);
-    }
-
-    return names;
-  }
-
-  const memberNames =
+  const memberOptions =
     useMemo(() => {
-      return getTripMembers(trip);
-    }, [trip]);
+      return getExpenseMemberOptions(
+        trip,
+        currentUserId
+      );
+    }, [trip, currentUserId]);
 
-  // ★ 핵심
-  // 여행의 첫 번째 멤버를 현재 사용자로 취급
-  const currentUserName =
-    memberNames[0] ?? "나";
+  const memberDisplayOptions =
+    useMemo(() => {
+      return getExpenseMemberOptions(
+        trip,
+        currentUserId,
+        true
+      );
+    }, [trip, currentUserId]);
+
+  const memberIds = useMemo(
+    () => memberOptions.map((member) => member.id),
+    [memberOptions]
+  );
+
+  const currentMember = useMemo(
+    () =>
+      currentUserId
+        ? memberOptions.find(
+            (member) =>
+              member.userId === currentUserId
+          ) ?? null
+        : null,
+    [memberOptions, currentUserId]
+  );
+
+  const currentMemberId = currentMember?.id ?? null;
+
+  // 구형 이름 기반 대여금은 이름이 유일할 때만 현재 사용자와 연결해
+  // 표시한다. 저장 데이터 자체를 memberId로 변환하지 않는다.
+  const legacyCurrentUserName =
+    currentMember &&
+    memberOptions.filter(
+      (member) =>
+        member.displayName === currentMember.displayName
+    ).length === 1
+      ? currentMember.displayName
+      : null;
 
   function getDefaultCurrency(
     country?: string
@@ -515,7 +537,10 @@ export default function ExpenseScreen() {
   const loadData =
     useCallback(async () => {
       const tripData =
-        await getTrip();
+        await getCurrentTripWithRecovery();
+
+      const storedCurrentUserId =
+        await getStoredUserId();
 
       const paymentData =
         await getSettlementPayments();
@@ -537,6 +562,7 @@ export default function ExpenseScreen() {
         );
 
       setTrip(tripData);
+      setCurrentUserId(storedCurrentUserId);
 
       setExpenses(
         [...normalizedExpenses].sort(
@@ -551,50 +577,62 @@ export default function ExpenseScreen() {
         paymentData
       );
 
-      const members =
-        getTripMembers(tripData);
-
+      const members = getExpenseMemberOptions(
+        tripData,
+        storedCurrentUserId
+      );
+      const memberIds = members.map(
+        (member) => member.id
+      );
       const me =
-        members[0] ?? "나";
+        storedCurrentUserId
+          ? members.find(
+              (member) =>
+                member.userId === storedCurrentUserId
+            )?.id ?? ""
+          : "";
+      const defaultMemberId =
+        me || memberIds[0] || "";
 
-      setPayer((current) =>
-        members.includes(current)
+      setPayerMemberId((current) =>
+        memberIds.includes(current)
           ? current
-          : me
+          : defaultMemberId
       );
 
-      setLender((current) =>
-        members.includes(current)
+      setLenderMemberId((current) =>
+        memberIds.includes(current)
           ? current
-          : me
+          : defaultMemberId
       );
 
-      setBorrower((current) => {
+      setBorrowerMemberId((current) => {
         if (
           current &&
-          members.includes(current)
+          memberIds.includes(current)
         ) {
           return current;
         }
 
         return (
-          members.find(
-            (name) => name !== me
-          ) ?? me
+          memberIds.find(
+            (memberId) =>
+              memberId !== defaultMemberId
+          ) ?? defaultMemberId
         );
       });
 
-      setParticipants(
+      setParticipantMemberIds(
         (current) => {
           const valid =
             current.filter(
-              (name) =>
-                members.includes(name)
+              (memberId) =>
+                memberIds.includes(memberId)
             );
 
           return valid.length > 0
             ? valid
-            : members;
+            : memberIds;
         }
       );
 
@@ -911,7 +949,10 @@ export default function ExpenseScreen() {
           // 정산된 대여금은
           // 현재 보유금에 더 이상 영향 없음
           if (
-            expense.loanSettled
+            getExpenseSettlementStatus(
+              expense,
+              settlementPayments
+            ).status === "settled"
           ) {
             return;
           }
@@ -925,8 +966,14 @@ export default function ExpenseScreen() {
 
           // 내가 빌려준 돈
           if (
-            expense.lender ===
-            currentUserName
+            expense.lenderMemberId
+              ? expense.lenderMemberId ===
+                currentMemberId
+              : Boolean(
+                  legacyCurrentUserName &&
+                    expense.lender ===
+                      legacyCurrentUserName
+                )
           ) {
             if (
               method === "cash"
@@ -939,8 +986,14 @@ export default function ExpenseScreen() {
 
           // 내가 빌린 돈
           if (
-            expense.borrower ===
-            currentUserName
+            expense.borrowerMemberId
+              ? expense.borrowerMemberId ===
+                currentMemberId
+              : Boolean(
+                  legacyCurrentUserName &&
+                    expense.borrower ===
+                      legacyCurrentUserName
+                )
           ) {
             if (
               method === "cash"
@@ -972,7 +1025,9 @@ export default function ExpenseScreen() {
       };
     }, [
       expenses,
-      currentUserName,
+      currentMemberId,
+      legacyCurrentUserName,
+      settlementPayments,
     ]);
 
   // 실제 현재 가지고 있는 돈
@@ -1179,7 +1234,7 @@ export default function ExpenseScreen() {
 
       if (
         !localAmount ||
-        participants.length ===
+        participantMemberIds.length ===
           0
       ) {
         return 0;
@@ -1187,21 +1242,21 @@ export default function ExpenseScreen() {
 
       return (
         localAmount /
-        participants.length
+        participantMemberIds.length
       );
     }, [
       amount,
-      participants,
+      participantMemberIds,
       expenseType,
     ]);
 
   function toggleParticipant(
-    name: string
+    memberId: string
   ) {
-    setParticipants(
+    setParticipantMemberIds(
       (current) => {
         if (
-          current.includes(name)
+          current.includes(memberId)
         ) {
           if (
             current.length ===
@@ -1212,13 +1267,13 @@ export default function ExpenseScreen() {
 
           return current.filter(
             (item) =>
-              item !== name
+              item !== memberId
           );
         }
 
         return [
           ...current,
-          name,
+          memberId,
         ];
       }
     );
@@ -1262,21 +1317,44 @@ export default function ExpenseScreen() {
     if (
       expenseType ===
         "shared" &&
-      participants.length ===
-        0
+      (
+        !payerMemberId ||
+        participantMemberIds.length === 0 ||
+        !memberIds.includes(payerMemberId) ||
+        participantMemberIds.some(
+          (memberId) =>
+            !memberIds.includes(memberId)
+        )
+      )
     ) {
       Alert.alert(
         "참여자 확인",
-        "공동 지출 참여자를 선택해주세요."
+        "현재 여행의 결제자와 공동 지출 참여자를 선택해주세요."
       );
 
       return;
     }
 
     if (
-      expenseType ===
-        "loan" &&
-      lender === borrower
+      expenseType === "loan" &&
+      (
+        !lenderMemberId ||
+        !borrowerMemberId ||
+        !memberIds.includes(lenderMemberId) ||
+        !memberIds.includes(borrowerMemberId)
+      )
+    ) {
+      Alert.alert(
+        "대여 정보 확인",
+        "현재 여행의 빌려준 사람과 빌린 사람을 선택해주세요."
+      );
+
+      return;
+    }
+
+    if (
+      expenseType === "loan" &&
+      lenderMemberId === borrowerMemberId
     ) {
       Alert.alert(
         "대여 정보 확인",
@@ -1318,28 +1396,28 @@ export default function ExpenseScreen() {
 
         paymentMethod,
 
-        payer:
+        paidByMemberId:
           expenseType ===
           "shared"
-            ? payer
+            ? payerMemberId
             : undefined,
 
-        participants:
+        participantMemberIds:
           expenseType ===
           "shared"
-            ? participants
+            ? participantMemberIds
             : undefined,
 
-        lender:
+        lenderMemberId:
           expenseType ===
           "loan"
-            ? lender
+            ? lenderMemberId
             : undefined,
 
-        borrower:
+        borrowerMemberId:
           expenseType ===
           "loan"
-            ? borrower
+            ? borrowerMemberId
             : undefined,
 
         loanSettled:
@@ -1406,16 +1484,53 @@ export default function ExpenseScreen() {
       return;
     }
 
-    const nextSettled =
-      !expense.loanSettled;
+    const borrowerLabel = getExpensePartyLabel(
+      expense.borrowerMemberId,
+      expense.borrower,
+      memberDisplayOptions
+    );
+    const lenderLabel = getExpensePartyLabel(
+      expense.lenderMemberId,
+      expense.lender,
+      memberDisplayOptions
+    );
+    const relation =
+      getExpenseSettlementRelations(expense)[0];
+    const relationPayment = relation
+      ? settlementPayments.find((payment) =>
+          payment.resolvedRelations?.some(
+            (item) => item.id === relation.id
+          )
+        )
+      : undefined;
+    const directLoanPayment =
+      relationPayment?.source === "loan"
+        ? relationPayment
+        : undefined;
+    const isCompleting =
+      !expense.loanSettled &&
+      !directLoanPayment &&
+      !relationPayment;
+
+    if (
+      !expense.loanSettled &&
+      relationPayment &&
+      !directLoanPayment
+    ) {
+      Alert.alert(
+        "최종 정산에 포함된 기록",
+        "이 대여 기록은 최종 정산 완료 내역에서 취소할 수 있습니다."
+      );
+      return;
+    }
 
     Alert.alert(
-      nextSettled
+      isCompleting
         ? "정산 완료"
         : "정산 완료 취소",
 
-      nextSettled
-        ? `${expense.borrower} → ${expense.lender}\n₩${formatMoney(
+      isCompleting
+        ? `${borrowerLabel} → ${lenderLabel}\n₩${formatMoney(
             expense.krwAmount
           )}\n\n실제로 갚은 것이 맞나요?`
         : "이 대여금을 다시 미정산 상태로 바꿀까요?",
@@ -1428,39 +1543,65 @@ export default function ExpenseScreen() {
 
         {
           text:
-            nextSettled
+            isCompleting
               ? "정산 완료"
               : "미정산으로 변경",
 
           onPress:
             async () => {
-              const current =
-                await getExpenses();
-
-              const updated =
-                current.map(
-                  (
-                    item: Expense
-                  ) =>
-                    item.id ===
-                    expense.id
+              if (expense.loanSettled) {
+                const current =
+                  await getExpenses();
+                const updated = current.map(
+                  (item: Expense) =>
+                    item.id === expense.id
                       ? {
                           ...item,
-
-                          loanSettled:
-                            nextSettled,
-
-                          loanSettledAt:
-                            nextSettled
-                              ? getTodayString()
-                              : undefined,
+                          loanSettled: false,
+                          loanSettledAt: undefined,
                         }
                       : item
                 );
 
-              await saveExpenses(
-                updated
-              );
+                await saveExpenses(updated);
+              } else if (directLoanPayment) {
+                await deleteSettlementPayment(
+                  directLoanPayment.id
+                );
+              } else if (relation) {
+                const current =
+                  await getSettlementPayments();
+                const newPayment: SettlementPayment = {
+                  id: Date.now().toString(),
+                  source: "loan",
+                  fromMemberId: relation.fromMemberId,
+                  toMemberId: relation.toMemberId,
+                  amountKrw: relation.amountKrw,
+                  date: getTodayString(),
+                  resolvedRelations: [relation],
+                };
+
+                await saveSettlementPayments([
+                  ...current,
+                  newPayment,
+                ]);
+              } else {
+                // 이름 기반 legacy 대여는 기존 필드를 그대로 사용한다.
+                const current =
+                  await getExpenses();
+                const updated = current.map(
+                  (item: Expense) =>
+                    item.id === expense.id
+                      ? {
+                          ...item,
+                          loanSettled: true,
+                          loanSettledAt: getTodayString(),
+                        }
+                      : item
+                );
+
+                await saveExpenses(updated);
+              }
 
               await loadData();
             },
@@ -1493,214 +1634,107 @@ export default function ExpenseScreen() {
 
   // 공동지출 + 미정산 대여금
   const settlements =
-    useMemo(() => {
-      const balances: Record<
-        string,
-        number
-      > = {};
+    useMemo(
+      () =>
+        calculateExpenseSettlements(
+          expenses,
+          settlementPayments,
+          memberDisplayOptions
+        ),
+      [expenses, settlementPayments, memberDisplayOptions]
+    );
 
-      memberNames.forEach(
-        (name) => {
-          balances[name] = 0;
-        }
-      );
+  const resolvedSettlementRelationIds = useMemo(
+    () =>
+      getResolvedSettlementRelationIds(
+        settlementPayments
+      ),
+    [settlementPayments]
+  );
 
-      expenses.forEach(
-        (expense) => {
-          if (
-            expense.expenseType ===
-              "shared" &&
-            expense.payer &&
-            expense.participants &&
-            expense.participants
-              .length > 0
-          ) {
-            const share =
-              expense.krwAmount /
-              expense
-                .participants
-                .length;
+  const currentSettlementBreakdown = useMemo(() => {
+    if (!currentMemberId) {
+      return null;
+    }
 
-            balances[
-              expense.payer
-            ] =
-              (balances[
-                expense.payer
-              ] ?? 0) +
-              expense.krwAmount;
+    let sharedBalance = 0;
+    let loanBalance = 0;
+    let completedPaymentBalance = 0;
 
-            expense.participants.forEach(
-              (name) => {
-                balances[name] =
-                  (balances[
-                    name
-                  ] ?? 0) -
-                  share;
-              }
-            );
-          }
-
-          if (
-            expense.expenseType ===
-              "loan" &&
-            !expense.loanSettled &&
-            expense.lender &&
-            expense.borrower
-          ) {
-            balances[
-              expense.lender
-            ] =
-              (balances[
-                expense.lender
-              ] ?? 0) +
-              expense.krwAmount;
-
-            balances[
-              expense.borrower
-            ] =
-              (balances[
-                expense.borrower
-              ] ?? 0) -
-              expense.krwAmount;
-          }
-        }
-      );
-
-      settlementPayments.forEach(
-        (payment) => {
-          balances[
-            payment.from
-          ] =
-            (balances[
-              payment.from
-            ] ?? 0) +
-            payment.amountKrw;
-
-          balances[
-            payment.to
-          ] =
-            (balances[
-              payment.to
-            ] ?? 0) -
-            payment.amountKrw;
-        }
-      );
-
-      const creditors =
-        Object.entries(
-          balances
-        )
-          .filter(
-            ([, value]) =>
-              value > 1
-          )
-          .map(
-            ([name, value]) => ({
-              name,
-              amount:
-                value,
-            })
-          );
-
-      const debtors =
-        Object.entries(
-          balances
-        )
-          .filter(
-            ([, value]) =>
-              value < -1
-          )
-          .map(
-            ([name, value]) => ({
-              name,
-              amount:
-                -value,
-            })
-          );
-
-      const result: {
-        from: string;
-        to: string;
-        amount: number;
-      }[] = [];
-
-      let creditorIndex = 0;
-      let debtorIndex = 0;
-
-      while (
-        creditorIndex <
-          creditors.length &&
-        debtorIndex <
-          debtors.length
+    expenses.forEach((expense) => {
+      if (
+        expense.expenseType === "shared" &&
+        expense.paidByMemberId &&
+        expense.participantMemberIds?.length
       ) {
-        const creditor =
-          creditors[
-            creditorIndex
-          ];
+        const uniqueParticipants = [
+          ...new Set(expense.participantMemberIds),
+        ];
+        const share =
+          expense.krwAmount /
+          uniqueParticipants.length;
 
-        const debtor =
-          debtors[
-            debtorIndex
-          ];
-
-        const payment =
-          Math.min(
-            creditor.amount,
-            debtor.amount
-          );
-
-        if (
-          payment > 1
-        ) {
-          result.push({
-            from:
-              debtor.name,
-
-            to:
-              creditor.name,
-
-            amount:
-              payment,
-          });
+        if (expense.paidByMemberId === currentMemberId) {
+          sharedBalance += expense.krwAmount;
         }
 
-        creditor.amount -=
-          payment;
-
-        debtor.amount -=
-          payment;
-
-        if (
-          creditor.amount <
-          1
-        ) {
-          creditorIndex++;
-        }
-
-        if (
-          debtor.amount <
-          1
-        ) {
-          debtorIndex++;
+        if (uniqueParticipants.includes(currentMemberId)) {
+          sharedBalance -= share;
         }
       }
 
-      return result;
-    }, [
-      expenses,
-      settlementPayments,
-      memberNames,
-    ]);
+      if (
+        expense.expenseType === "loan" &&
+        !expense.loanSettled
+      ) {
+        if (expense.lenderMemberId === currentMemberId) {
+          loanBalance += expense.krwAmount;
+        }
+
+        if (expense.borrowerMemberId === currentMemberId) {
+          loanBalance -= expense.krwAmount;
+        }
+      }
+    });
+
+    settlementPayments.forEach((payment) => {
+      if (payment.fromMemberId === currentMemberId) {
+        completedPaymentBalance += payment.amountKrw;
+      }
+
+      if (payment.toMemberId === currentMemberId) {
+        completedPaymentBalance -= payment.amountKrw;
+      }
+    });
+
+    return {
+      sharedBalance,
+      loanBalance,
+      completedPaymentBalance,
+      total:
+        sharedBalance +
+        loanBalance +
+        completedPaymentBalance,
+    };
+  }, [
+    currentMemberId,
+    expenses,
+    settlementPayments,
+  ]);
+
+  const currentSettlementCount = settlements.filter(
+    (settlement) =>
+      settlement.fromMemberId === currentMemberId ||
+      settlement.toMemberId === currentMemberId
+  ).length;
 
   async function completeSettlement(
-    from: string,
-    to: string,
-    amountKrw: number
+    settlement: ExpenseSettlement
   ) {
     Alert.alert(
       "정산 완료",
-      `${from} → ${to}\n₩${formatMoney(
-        amountKrw
+      `${settlement.fromLabel} → ${settlement.toLabel}\n₩${formatMoney(
+        settlement.amount
       )}\n\n실제로 송금이 완료됐나요?`,
       [
         {
@@ -1713,19 +1747,38 @@ export default function ExpenseScreen() {
 
           onPress:
             async () => {
+              const resolvedRelations =
+                getRelationsResolvedBySettlement(
+                  expenses,
+                  settlementPayments,
+                  settlement
+                );
               const newPayment: SettlementPayment =
                 {
                   id:
                     Date.now().toString(),
 
-                  from,
+                  source: "final",
 
-                  to,
+                  fromMemberId:
+                    settlement.fromMemberId,
 
-                  amountKrw,
+                  toMemberId:
+                    settlement.toMemberId,
+
+                  from:
+                    settlement.fromLegacyName,
+
+                  to:
+                    settlement.toLegacyName,
+
+                  amountKrw:
+                    settlement.amount,
 
                   date:
                     getTodayString(),
+
+                  resolvedRelations,
                 };
 
               const current =
@@ -1772,6 +1825,107 @@ export default function ExpenseScreen() {
         },
       ]
     );
+  }
+
+  function formatExpenseDate(date: string) {
+    return date.replace(/-/g, ".");
+  }
+
+  function paymentMethodLabel(
+    method?: PaymentMethod
+  ) {
+    return method === "card" ? "카드" : "현금";
+  }
+
+  function formatSignedWon(value: number) {
+    const rounded = Math.round(value);
+    return rounded < 0
+      ? `-₩${formatMoney(Math.abs(rounded))}`
+      : `₩${formatMoney(rounded)}`;
+  }
+
+  function getSharedParticipantLabels(
+    expense: ExpenseWithSnapshot
+  ) {
+    if (expense.participantMemberIds) {
+      return [
+        ...new Set(expense.participantMemberIds),
+      ].map(
+        (memberId) => ({
+          key: memberId,
+          label: getExpensePartyLabel(
+            memberId,
+            undefined,
+            memberDisplayOptions
+          ),
+        })
+      );
+    }
+
+    return [
+      ...new Set(expense.participants ?? []),
+    ].map(
+      (name, index) => ({
+        key: `legacy-${index}-${name}`,
+        label: name,
+      })
+    );
+  }
+
+  function getSettlementBreakdownRows(
+    settlement: ExpenseSettlement
+  ) {
+    if (
+      !currentSettlementBreakdown ||
+      currentSettlementCount !== 1
+    ) {
+      return [];
+    }
+
+    const direction =
+      settlement.fromMemberId === currentMemberId
+        ? -1
+        : settlement.toMemberId === currentMemberId
+          ? 1
+          : 0;
+
+    if (
+      direction === 0 ||
+      Math.abs(
+        Math.abs(currentSettlementBreakdown.total) -
+          settlement.amount
+      ) > 1
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        key: "loan",
+        label:
+          currentSettlementBreakdown.loanBalance < 0
+            ? "빌린 돈"
+            : "빌려준 돈",
+        value:
+          currentSettlementBreakdown.loanBalance * direction,
+      },
+      {
+        key: "shared",
+        label:
+          currentSettlementBreakdown.sharedBalance < 0
+            ? "공동지출 보낼 돈"
+            : "공동지출 받을 돈",
+        value:
+          currentSettlementBreakdown.sharedBalance * direction,
+      },
+      {
+        key: "completed",
+        label: "정산 완료 반영",
+        value:
+          currentSettlementBreakdown.completedPaymentBalance *
+          direction,
+      },
+    ].filter((row) => Math.abs(row.value) > 1);
   }
 
   return (
@@ -2540,8 +2694,8 @@ export default function ExpenseScreen() {
                     item.value ===
                     "shared"
                   ) {
-                    setParticipants(
-                      memberNames
+                    setParticipantMemberIds(
+                      memberIds
                     );
                   }
                 }}
@@ -2687,20 +2841,20 @@ export default function ExpenseScreen() {
                 marginTop: 8,
               }}
             >
-              {memberNames.map(
-                (name) => (
+              {memberOptions.map(
+                (member) => (
                   <Pressable
-                    key={name}
+                    key={member.id}
                     onPress={() =>
-                      setPayer(name)
+                      setPayerMemberId(member.id)
                     }
                     style={{
                       padding: 10,
                       borderRadius: 20,
 
                       backgroundColor:
-                        payer ===
-                        name
+                        payerMemberId ===
+                        member.id
                           ? "#111827"
                           : "#F3F4F6",
                     }}
@@ -2708,13 +2862,13 @@ export default function ExpenseScreen() {
                     <Text
                       style={{
                         color:
-                          payer ===
-                          name
+                          payerMemberId ===
+                          member.id
                             ? "white"
                             : "#374151",
                       }}
                     >
-                      {name}
+                      {member.label}
                     </Text>
                   </Pressable>
                 )
@@ -2739,19 +2893,19 @@ export default function ExpenseScreen() {
                 marginTop: 8,
               }}
             >
-              {memberNames.map(
-                (name) => {
+              {memberOptions.map(
+                (member) => {
                   const selected =
-                    participants.includes(
-                      name
+                    participantMemberIds.includes(
+                      member.id
                     );
 
                   return (
                     <Pressable
-                      key={name}
+                      key={member.id}
                       onPress={() =>
                         toggleParticipant(
-                          name
+                          member.id
                         )
                       }
                       style={{
@@ -2775,7 +2929,7 @@ export default function ExpenseScreen() {
                         {selected
                           ? "✓ "
                           : ""}
-                        {name}
+                        {member.label}
                       </Text>
                     </Pressable>
                   );
@@ -2806,20 +2960,20 @@ export default function ExpenseScreen() {
                 marginTop: 8,
               }}
             >
-              {memberNames.map(
-                (name) => (
+              {memberOptions.map(
+                (member) => (
                   <Pressable
-                    key={name}
+                    key={member.id}
                     onPress={() =>
-                      setLender(name)
+                      setLenderMemberId(member.id)
                     }
                     style={{
                       padding: 10,
                       borderRadius: 20,
 
                       backgroundColor:
-                        lender ===
-                        name
+                        lenderMemberId ===
+                        member.id
                           ? "#059669"
                           : "#F3F4F6",
                     }}
@@ -2827,13 +2981,13 @@ export default function ExpenseScreen() {
                     <Text
                       style={{
                         color:
-                          lender ===
-                          name
+                          lenderMemberId ===
+                          member.id
                             ? "white"
                             : "#374151",
                       }}
                     >
-                      {name}
+                      {member.label}
                     </Text>
                   </Pressable>
                 )
@@ -2858,13 +3012,13 @@ export default function ExpenseScreen() {
                 marginTop: 8,
               }}
             >
-              {memberNames.map(
-                (name) => (
+              {memberOptions.map(
+                (member) => (
                   <Pressable
-                    key={name}
+                    key={member.id}
                     onPress={() =>
-                      setBorrower(
-                        name
+                      setBorrowerMemberId(
+                        member.id
                       )
                     }
                     style={{
@@ -2872,8 +3026,8 @@ export default function ExpenseScreen() {
                       borderRadius: 20,
 
                       backgroundColor:
-                        borrower ===
-                        name
+                        borrowerMemberId ===
+                        member.id
                           ? "#DC2626"
                           : "#F3F4F6",
                     }}
@@ -2881,13 +3035,13 @@ export default function ExpenseScreen() {
                     <Text
                       style={{
                         color:
-                          borrower ===
-                          name
+                          borrowerMemberId ===
+                          member.id
                             ? "white"
                             : "#374151",
                       }}
                     >
-                      {name}
+                      {member.label}
                     </Text>
                   </Pressable>
                 )
@@ -2966,7 +3120,7 @@ export default function ExpenseScreen() {
                   }}
                 >
                   {
-                    participants.length
+                    participantMemberIds.length
                   }
                   명 균등 분할 → 1인당 약{" "}
                   {currencySymbol(
@@ -3116,74 +3270,188 @@ export default function ExpenseScreen() {
           </Text>
         ) : (
           settlements.map(
-            (
-              settlement,
-              index
-            ) => (
-              <View
-                key={`${settlement.from}-${settlement.to}-${index}`}
+            (settlement, index) => {
+              const isCurrentFrom =
+                settlement.fromMemberId ===
+                currentMemberId;
+              const isCurrentTo =
+                settlement.toMemberId ===
+                currentMemberId;
+              const breakdownRows =
+                getSettlementBreakdownRows(
+                  settlement
+                );
+              const hasDetailedBreakdown =
+                breakdownRows.length >= 2;
+
+              return (
+                <View
+                key={`${settlement.fromKey}-${settlement.toKey}-${index}`}
                 style={{
                   marginTop: 12,
-                  backgroundColor:
-                    "#FEF2F2",
-                  borderRadius: 12,
-                  padding: 14,
+                  backgroundColor: "#FFF7ED",
+                  borderRadius: 16,
+                  padding: 16,
+                  borderWidth: 1,
+                  borderColor: "#FED7AA",
                 }}
               >
-                <Text
+                <View
                   style={{
-                    color:
-                      "#DC2626",
-                    fontWeight:
-                      "bold",
+                    alignSelf: "flex-start",
+                    paddingHorizontal: 9,
+                    paddingVertical: 5,
+                    borderRadius: 999,
+                    backgroundColor: "#FFEDD5",
                   }}
                 >
-                  ● 미정산
+                  <Text
+                    style={{
+                      color: "#C2410C",
+                      fontSize: 12,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    ● 미정산
+                  </Text>
+                </View>
+
+                <Text
+                  style={{
+                    marginTop: 14,
+                    color: "#374151",
+                    fontSize: 15,
+                  }}
+                >
+                  {isCurrentFrom
+                    ? `내가 ${settlement.toLabel}에게`
+                    : isCurrentTo
+                      ? `${settlement.fromLabel}에게`
+                      : `${settlement.fromLabel} → ${settlement.toLabel}`}
                 </Text>
 
                 <Text
                   style={{
-                    marginTop: 7,
-                    fontWeight:
-                      "bold",
-                    color:
-                      "#111827",
+                    marginTop: 4,
+                    fontSize: 27,
+                    color: "#C2410C",
+                    fontWeight: "bold",
                   }}
                 >
-                  {settlement.from} →{" "}
-                  {settlement.to}
+                  ₩{formatMoney(settlement.amount)}{" "}
+                  <Text style={{ fontSize: 17 }}>
+                    {isCurrentTo
+                      ? "받으면 끝"
+                      : isCurrentFrom
+                        ? "보내면 끝"
+                        : "보내면 정산"}
+                  </Text>
                 </Text>
 
-                <Text
-                  style={{
-                    marginTop: 5,
-                    fontSize: 19,
-                    color:
-                      "#DC2626",
-                    fontWeight:
-                      "bold",
-                  }}
-                >
-                  ₩
-                  {formatMoney(
-                    settlement.amount
-                  )}
-                </Text>
+                {hasDetailedBreakdown ? (
+                  <View
+                    style={{
+                      marginTop: 16,
+                      paddingTop: 12,
+                      borderTopWidth: 1,
+                      borderTopColor: "#FED7AA",
+                    }}
+                  >
+                    {breakdownRows.map((row) => (
+                      <View
+                        key={row.key}
+                        style={{
+                          flexDirection: "row",
+                          justifyContent: "space-between",
+                          alignItems: "flex-start",
+                          gap: 12,
+                          marginTop: 7,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            flex: 1,
+                            color: "#6B7280",
+                          }}
+                        >
+                          {row.label}
+                        </Text>
+                        <Text
+                          style={{
+                            color: "#374151",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          {formatSignedWon(row.value)}
+                        </Text>
+                      </View>
+                    ))}
+
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        gap: 12,
+                        marginTop: 12,
+                        paddingTop: 11,
+                        borderTopWidth: 1,
+                        borderTopColor: "#FED7AA",
+                      }}
+                    >
+                      <Text
+                        style={{
+                          flex: 1,
+                          color: "#111827",
+                          fontWeight: "bold",
+                        }}
+                      >
+                        최종
+                      </Text>
+                      <Text
+                        style={{
+                          color: "#C2410C",
+                          fontWeight: "bold",
+                        }}
+                      >
+                        ₩{formatMoney(settlement.amount)}
+                      </Text>
+                    </View>
+                  </View>
+                ) : breakdownRows.length === 1 ? (
+                  <Text
+                    style={{
+                      marginTop: 14,
+                      color: "#6B7280",
+                      fontSize: 13,
+                    }}
+                  >
+                    {breakdownRows[0].label} ·{" "}
+                    {formatSignedWon(breakdownRows[0].value)}
+                  </Text>
+                ) : (
+                  <Text
+                    style={{
+                      marginTop: 10,
+                      color: "#6B7280",
+                      fontSize: 13,
+                    }}
+                  >
+                    공동지출과 대여 내역을 모두 합산한 금액입니다.
+                  </Text>
+                )}
 
                 <Pressable
                   onPress={() =>
                     completeSettlement(
-                      settlement.from,
-                      settlement.to,
-                      settlement.amount
+                      settlement
                     )
                   }
                   style={{
-                    marginTop: 10,
-                    backgroundColor:
-                      "#64748B",
-                    paddingVertical: 10,
-                    borderRadius: 10,
+                    marginTop: 16,
+                    backgroundColor: "#C2410C",
+                    paddingVertical: 12,
+                    borderRadius: 12,
                     alignItems:
                       "center",
                   }}
@@ -3198,8 +3466,9 @@ export default function ExpenseScreen() {
                     정산 완료
                   </Text>
                 </Pressable>
-              </View>
-            )
+                </View>
+              );
+            }
           )
         )}
       </View>
@@ -3226,52 +3495,92 @@ export default function ExpenseScreen() {
           </Text>
 
           {settlementPayments.map(
-            (payment) => (
+            (payment) => {
+              const fromLabel = getExpensePartyLabel(
+                payment.fromMemberId,
+                payment.from,
+                memberDisplayOptions
+              );
+              const toLabel = getExpensePartyLabel(
+                payment.toMemberId,
+                payment.to,
+                memberDisplayOptions
+              );
+              const isCurrentFrom = Boolean(
+                currentMemberId &&
+                  payment.fromMemberId === currentMemberId
+              );
+              const isCurrentTo = Boolean(
+                currentMemberId &&
+                  payment.toMemberId === currentMemberId
+              );
+
+              return (
               <View
                 key={payment.id}
                 style={{
                   marginTop: 12,
-                  backgroundColor:
-                    "#ECFDF5",
-                  borderRadius: 12,
-                  padding: 14,
+                  backgroundColor: "#F0FDF4",
+                  borderRadius: 14,
+                  padding: 15,
+                  borderWidth: 1,
+                  borderColor: "#BBF7D0",
                 }}
               >
-                <Text
+                <View
                   style={{
-                    color:
-                      "#059669",
-                    fontWeight:
-                      "bold",
+                    alignSelf: "flex-start",
+                    paddingHorizontal: 9,
+                    paddingVertical: 5,
+                    borderRadius: 999,
+                    backgroundColor: "#DCFCE7",
                   }}
                 >
-                  ✅ 정산 완료
-                </Text>
+                  <Text
+                    style={{
+                      color: "#15803D",
+                      fontSize: 12,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    ✓ 정산완료
+                  </Text>
+                </View>
 
                 <Text
                   style={{
-                    marginTop: 7,
-                    fontWeight:
-                      "bold",
+                    marginTop: 12,
+                    color: "#111827",
+                    fontSize: 16,
+                    fontWeight: "bold",
                   }}
                 >
-                  {payment.from} →{" "}
-                  {payment.to}
+                  {isCurrentFrom
+                    ? `${toLabel}에게 보냄`
+                    : isCurrentTo
+                      ? `${fromLabel}에게 받음`
+                      : `${fromLabel} → ${toLabel}`}
                 </Text>
 
                 <Text
                   style={{
                     marginTop: 5,
-                    color:
-                      "#059669",
-                    fontWeight:
-                      "bold",
+                    color: "#15803D",
+                    fontSize: 21,
+                    fontWeight: "bold",
                   }}
                 >
-                  ₩
-                  {formatMoney(
-                    payment.amountKrw
-                  )}
+                  ₩{formatMoney(payment.amountKrw)}
+                </Text>
+
+                <Text
+                  style={{
+                    marginTop: 8,
+                    color: "#9CA3AF",
+                    fontSize: 12,
+                  }}
+                >
+                  {formatExpenseDate(payment.date)}
                 </Text>
 
                 <Pressable
@@ -3281,21 +3590,24 @@ export default function ExpenseScreen() {
                     )
                   }
                   style={{
-                    marginTop: 9,
-                    backgroundColor:
-                      "#F3F4F6",
-                    borderRadius: 8,
-                    paddingVertical: 8,
-                    alignItems:
-                      "center",
+                    alignSelf: "flex-end",
+                    marginTop: 6,
+                    paddingHorizontal: 4,
+                    paddingVertical: 4,
                   }}
                 >
-                  <Text>
+                  <Text
+                    style={{
+                      color: "#6B7280",
+                      fontSize: 12,
+                    }}
+                  >
                     정산 완료 취소
                   </Text>
                 </Pressable>
               </View>
-            )
+              );
+            }
           )}
         </View>
       )}
@@ -3331,99 +3643,218 @@ export default function ExpenseScreen() {
         </View>
       ) : (
         expenses.map(
-          (expense) => (
+          (expense) => {
+            const isShared =
+              expense.expenseType === "shared";
+            const isLoan =
+              expense.expenseType === "loan";
+            const settlementStatus =
+              getExpenseSettlementStatus(
+                expense,
+                settlementPayments
+              );
+            const expenseRelations =
+              getExpenseSettlementRelations(expense);
+            const isLoanSettled =
+              isLoan &&
+              settlementStatus.status === "settled";
+            const loanRelationPayment =
+              isLoan && expenseRelations[0]
+                ? settlementPayments.find((payment) =>
+                    payment.resolvedRelations?.some(
+                      (relation) =>
+                        relation.id ===
+                        expenseRelations[0].id
+                    )
+                  )
+                : undefined;
+            const isLoanResolvedByFinal = Boolean(
+              isLoanSettled &&
+                !expense.loanSettled &&
+                loanRelationPayment &&
+                loanRelationPayment.source !== "loan"
+            );
+            const participants = isShared
+              ? getSharedParticipantLabels(expense)
+              : [];
+            const payerLabel = getExpensePartyLabel(
+              expense.paidByMemberId,
+              expense.payer,
+              memberDisplayOptions
+            );
+            const lenderLabel = getExpensePartyLabel(
+              expense.lenderMemberId,
+              expense.lender,
+              memberDisplayOptions
+            );
+            const borrowerLabel = getExpensePartyLabel(
+              expense.borrowerMemberId,
+              expense.borrower,
+              memberDisplayOptions
+            );
+            const isCurrentBorrower = Boolean(
+              currentMemberId &&
+                expense.borrowerMemberId === currentMemberId
+            );
+            const isCurrentLender = Boolean(
+              currentMemberId &&
+                expense.lenderMemberId === currentMemberId
+            );
+            const loanBadge = isCurrentBorrower
+              ? "빌린 돈"
+              : isCurrentLender
+                ? "빌려준 돈"
+                : "대여";
+            const loanTitle = isCurrentBorrower
+              ? `${lenderLabel}에게 빌림`
+              : isCurrentLender
+                ? `${borrowerLabel}에게 빌려줌`
+                : `${lenderLabel}이 ${borrowerLabel}에게 빌려줌`;
+            const loanMeaning = isCurrentBorrower
+              ? "내가 갚아야 할 돈"
+              : isCurrentLender
+                ? "내가 받을 돈"
+                : `${borrowerLabel}이 갚아야 할 돈`;
+
+            return (
             <View
               key={expense.id}
               style={{
                 marginTop: 12,
-                padding: 16,
-                backgroundColor:
-                  "white",
-                borderRadius: 16,
+                padding: 17,
+                backgroundColor: "white",
+                borderRadius: 18,
+                borderWidth: 1,
+                borderColor: "#E5E7EB",
               }}
             >
-              {expense.expenseType ===
-              "loan" ? (
-                <>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 7,
+                }}
+              >
+                <View
+                  style={{
+                    paddingHorizontal: 9,
+                    paddingVertical: 5,
+                    borderRadius: 999,
+                    backgroundColor: isLoan
+                      ? "#F3E8FF"
+                      : isShared
+                        ? "#DBEAFE"
+                        : "#F3F4F6",
+                  }}
+                >
                   <Text
                     style={{
-                      fontWeight:
-                        "bold",
-                      fontSize: 17,
-                      color:
-                        "#7C3AED",
+                      color: isLoan
+                        ? "#7E22CE"
+                        : isShared
+                          ? "#1D4ED8"
+                          : "#4B5563",
+                      fontSize: 12,
+                      fontWeight: "bold",
                     }}
                   >
-                    💸 돈 빌려주기
+                    {isLoan
+                      ? loanBadge
+                      : isShared
+                        ? "공동지출"
+                        : "개인지출"}
                   </Text>
+                </View>
 
-                  <Text
+                {isLoan ? (
+                  <View
                     style={{
-                      marginTop: 8,
-                      fontWeight:
-                        "bold",
-                    }}
-                  >
-                    {expense.borrower} →{" "}
-                    {expense.lender}
-                  </Text>
-
-                  <Text
-                    style={{
-                      marginTop: 6,
-                      color:
-                        "#6B7280",
-                    }}
-                  >
-                    {expense.paymentMethod ===
-                    "cash"
-                      ? "💵 현금"
-                      : "💳 카드"}
-                  </Text>
-
-                  <Pressable
-                    onPress={() =>
-                      toggleLoanSettlement(
-                        expense
-                      )
-                    }
-                    style={{
-                      marginTop: 12,
-                      paddingVertical: 11,
-                      borderRadius: 10,
-                      alignItems:
-                        "center",
-
-                      backgroundColor:
-                        expense.loanSettled
-                          ? "#ECFDF5"
-                          : "#FEE2E2",
+                      paddingHorizontal: 9,
+                      paddingVertical: 5,
+                      borderRadius: 999,
+                      backgroundColor: isLoanSettled
+                        ? "#DCFCE7"
+                        : "#FEE2E2",
                     }}
                   >
                     <Text
                       style={{
-                        fontWeight:
-                          "bold",
-
-                        color:
-                          expense.loanSettled
-                            ? "#059669"
-                            : "#DC2626",
+                        color: isLoanSettled
+                          ? "#15803D"
+                          : "#DC2626",
+                        fontSize: 12,
+                        fontWeight: "bold",
                       }}
                     >
-                      {expense.loanSettled
-                        ? "✅ 정산 완료"
+                      {isLoanSettled
+                        ? "✓ 정산완료"
                         : "● 미정산"}
                     </Text>
-                  </Pressable>
-                </>
-              ) : (
+                  </View>
+                ) : isShared ? (
+                  <View
+                    style={{
+                      paddingHorizontal: 9,
+                      paddingVertical: 5,
+                      borderRadius: 999,
+                      backgroundColor:
+                        settlementStatus.status === "settled"
+                          ? "#DCFCE7"
+                          : settlementStatus.status === "partial"
+                            ? "#E0E7FF"
+                            : "#FEF3C7",
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color:
+                          settlementStatus.status === "settled"
+                            ? "#15803D"
+                            : settlementStatus.status === "partial"
+                              ? "#4338CA"
+                              : "#92400E",
+                        fontSize: 12,
+                        fontWeight: "bold",
+                      }}
+                    >
+                      {settlementStatus.status === "settled"
+                        ? "✓ 정산완료"
+                        : settlementStatus.status === "partial"
+                          ? "일부 정산"
+                          : "정산 대상"}
+                    </Text>
+                  </View>
+                ) : null}
+
+                <Pressable
+                  onPress={() => handleDelete(expense)}
+                  hitSlop={8}
+                  style={{
+                    marginLeft: "auto",
+                    paddingHorizontal: 5,
+                    paddingVertical: 4,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: "#9CA3AF",
+                      fontSize: 12,
+                    }}
+                  >
+                    삭제
+                  </Text>
+                </Pressable>
+              </View>
+
+              {isShared ? (
                 <>
                   <Text
                     style={{
-                      fontWeight:
-                        "bold",
-                      fontSize: 17,
+                      marginTop: 14,
+                      color: "#111827",
+                      fontSize: 18,
+                      fontWeight: "bold",
                     }}
                   >
                     {expense.category}
@@ -3431,66 +3862,289 @@ export default function ExpenseScreen() {
 
                   <Text
                     style={{
-                      marginTop: 6,
-                      color:
-                        "#6B7280",
+                      marginTop: 15,
+                      color: "#6B7280",
+                      fontSize: 13,
                     }}
                   >
-                    {expense.paymentMethod ===
-                    "cash"
-                      ? "💵 현금"
-                      : "💳 카드"}
+                    총 결제
+                  </Text>
+
+                  <Text
+                    style={{
+                      marginTop: 2,
+                      color: "#111827",
+                      fontSize: 25,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {currencySymbol(expense.currency)}
+                    {formatNumericInput(
+                      String(expense.localAmount),
+                      true
+                    )}
+                  </Text>
+
+                  <View
+                    style={{
+                      marginTop: 12,
+                      flexDirection: "row",
+                      alignItems: "flex-start",
+                      gap: 12,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: "#6B7280",
+                        fontSize: 13,
+                      }}
+                    >
+                      결제자
+                    </Text>
+                    <Text
+                      style={{
+                        flex: 1,
+                        color: "#111827",
+                        fontWeight: "bold",
+                      }}
+                    >
+                      {payerLabel}
+                    </Text>
+                  </View>
+
+                  <View
+                    style={{
+                      marginTop: 14,
+                      paddingTop: 12,
+                      borderTopWidth: 1,
+                      borderTopColor: "#E5E7EB",
+                    }}
+                  >
+                    {participants.map((participant) => {
+                      const relation = expenseRelations.find(
+                        (item) =>
+                          item.fromMemberId === participant.key
+                      );
+                      const isResolved = Boolean(
+                        relation &&
+                          resolvedSettlementRelationIds.has(
+                            relation.id
+                          )
+                      );
+                      const isPayerShare =
+                        participant.key ===
+                        expense.paidByMemberId;
+
+                      return (
+                        <View
+                          key={participant.key}
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "flex-start",
+                            justifyContent: "space-between",
+                            gap: 12,
+                            marginTop: 7,
+                          }}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text
+                              numberOfLines={2}
+                              style={{
+                                color: "#374151",
+                              }}
+                            >
+                              {participant.label}
+                            </Text>
+                            {isResolved || isPayerShare ? (
+                              <Text
+                                style={{
+                                  marginTop: 2,
+                                  color: isResolved
+                                    ? "#15803D"
+                                    : "#9CA3AF",
+                                  fontSize: 11,
+                                }}
+                              >
+                                {isResolved
+                                  ? "✓ 정산완료"
+                                  : "본인 부담"}
+                              </Text>
+                            ) : null}
+                          </View>
+                          <Text
+                            style={{
+                              color: "#111827",
+                              fontWeight: "bold",
+                            }}
+                          >
+                            {participants.length > 0 &&
+                            expense.krwAmount % participants.length !== 0
+                              ? "약 "
+                              : ""}
+                            ₩{formatMoney(
+                              participants.length > 0
+                                ? expense.krwAmount /
+                                    participants.length
+                                : 0
+                            )}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </>
+              ) : isLoan ? (
+                <>
+                  <Text
+                    style={{
+                      marginTop: 14,
+                      color: "#111827",
+                      fontSize: 18,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {loanTitle}
+                  </Text>
+
+                  <Text
+                    style={{
+                      marginTop: 12,
+                      color: "#111827",
+                      fontSize: 25,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {currencySymbol(expense.currency)}
+                    {formatNumericInput(
+                      String(expense.localAmount),
+                      true
+                    )}
+                  </Text>
+
+                  <Text
+                    style={{
+                      marginTop: 6,
+                      color: isCurrentBorrower
+                        ? "#DC2626"
+                        : isCurrentLender
+                          ? "#059669"
+                          : "#6B7280",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {loanMeaning}
+                  </Text>
+
+                  {isLoanResolvedByFinal ? (
+                    <View
+                      style={{
+                        marginTop: 14,
+                        paddingVertical: 10,
+                        paddingHorizontal: 12,
+                        borderRadius: 10,
+                        backgroundColor: "#F0FDF4",
+                        borderWidth: 1,
+                        borderColor: "#BBF7D0",
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: "#15803D",
+                          textAlign: "center",
+                          fontWeight: "bold",
+                        }}
+                      >
+                        최종 정산에 포함된 기록입니다
+                      </Text>
+                    </View>
+                  ) : (
+                    <Pressable
+                      onPress={() =>
+                        toggleLoanSettlement(expense)
+                      }
+                      style={{
+                        marginTop: 14,
+                        paddingVertical: 10,
+                        borderRadius: 10,
+                        alignItems: "center",
+                        backgroundColor: isLoanSettled
+                          ? "#F0FDF4"
+                          : "#FEF2F2",
+                        borderWidth: 1,
+                        borderColor: isLoanSettled
+                          ? "#BBF7D0"
+                          : "#FECACA",
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: isLoanSettled
+                            ? "#15803D"
+                            : "#DC2626",
+                          fontWeight: "bold",
+                        }}
+                      >
+                        {isLoanSettled
+                          ? "정산 완료 취소"
+                          : "대여금 정산 완료"}
+                      </Text>
+                    </Pressable>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Text
+                    style={{
+                      marginTop: 14,
+                      color: "#111827",
+                      fontSize: 18,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {expense.category}
+                  </Text>
+
+                  <Text
+                    style={{
+                      marginTop: 12,
+                      color: "#111827",
+                      fontSize: 25,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {currencySymbol(expense.currency)}
+                    {formatNumericInput(
+                      String(expense.localAmount),
+                      true
+                    )}
                   </Text>
                 </>
               )}
 
-              <Text
-                style={{
-                  marginTop: 10,
-                  fontSize: 18,
-                  fontWeight: "bold",
-                }}
-              >
-                {currencySymbol(
-                  expense.currency
-                )}
-                {formatNumericInput(
-                  String(
-                    expense.localAmount
-                  ),
-                  true
-                )}
-              </Text>
-
-              <Text
-                style={{
-                  marginTop: 3,
-                  color: "#6B7280",
-                }}
-              >
-                저장 당시 환산액: ₩
-                {formatMoney(
-                  expense.krwAmount
-                )}
-              </Text>
-
-              <Text
-                style={{
-                  marginTop: 3,
-                  color: "#9CA3AF",
-                  fontSize: 12,
-                }}
-              >
-                적용 환율: 1{" "}
-                {expense.currency} ={" "}
-                {formatNumericInput(
-                  String(
-                    expense.exchangeRate
-                  ),
-                  true
-                )}{" "}
-                KRW
-              </Text>
+              {expense.currency !== "KRW" ? (
+                <View
+                  style={{
+                    marginTop: 12,
+                    padding: 10,
+                    borderRadius: 10,
+                    backgroundColor: "#F9FAFB",
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: "#6B7280",
+                      fontSize: 12,
+                    }}
+                  >
+                    저장 당시 환산 ₩{formatMoney(expense.krwAmount)}
+                    {" · "}1 {expense.currency} ={" "}
+                    {formatNumericInput(
+                      String(expense.exchangeRate),
+                      true
+                    )} KRW
+                  </Text>
+                </View>
+              ) : null}
 
               {expense.memo?.trim() ? (
                 <Text
@@ -3505,43 +4159,23 @@ export default function ExpenseScreen() {
 
               <Text
                 style={{
-                  marginTop: 6,
+                  marginTop: 13,
+                  paddingTop: 12,
+                  borderTopWidth: 1,
+                  borderTopColor: "#F3F4F6",
                   color: "#9CA3AF",
                   fontSize: 12,
                 }}
               >
-                {expense.date}
+                {formatExpenseDate(expense.date)} ·{" "}
+                {paymentMethodLabel(expense.paymentMethod)}
+                {isShared
+                  ? ` · ${participants.length}명`
+                  : ""}
               </Text>
-
-              <Pressable
-                onPress={() =>
-                  handleDelete(
-                    expense
-                  )
-                }
-                style={{
-                  marginTop: 12,
-                  backgroundColor:
-                    "#FEECEC",
-                  paddingVertical: 8,
-                  borderRadius: 9,
-                  alignItems:
-                    "center",
-                }}
-              >
-                <Text
-                  style={{
-                    color:
-                      "#DC2626",
-                    fontWeight:
-                      "bold",
-                  }}
-                >
-                  기록 삭제
-                </Text>
-              </Pressable>
             </View>
-          )
+            );
+          }
         )
       )}
     </ScrollView>

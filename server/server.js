@@ -811,6 +811,9 @@ app.get("/trips/:id/members", async (req, res) => {
   }
 });
 
+// 로그인 전 단계라 userId 자체는 권한 증명이 아니다. 현재는 tripId와
+// memberId를 아는 클라이언트가 claim할 수 있으며, 추후 초대 토큰 또는
+// 인증이 도입되면 이 경계에서 권한을 추가 검증해야 한다.
 app.post(
   "/trips/:tripId/members/:memberId/claim",
   async (req, res) => {
@@ -827,6 +830,16 @@ app.post(
       }
 
       if (!hasDatabaseUrl) {
+        const tripExists = trips.some(
+          (trip) => trip.id === tripId
+        );
+
+        if (!tripExists) {
+          return res.status(404).json({
+            message: "여행을 찾을 수 없습니다.",
+          });
+        }
+
         const userExists = users.some(
           (user) => user.id === userId
         );
@@ -868,6 +881,16 @@ app.post(
           });
         }
 
+        if (
+          !member.userId &&
+          member.status !== "placeholder"
+        ) {
+          return res.status(409).json({
+            message:
+              "참여 대기 중인 여행 멤버만 연결할 수 있습니다.",
+          });
+        }
+
         const duplicateMember = tripMembers.find(
           (item) =>
             item.tripId === tripId &&
@@ -902,6 +925,18 @@ app.post(
 
       try {
         await client.query("BEGIN");
+
+        const tripResult = await client.query(
+          "SELECT id FROM trips WHERE id = $1 FOR UPDATE",
+          [tripId]
+        );
+
+        if (tripResult.rowCount === 0) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({
+            message: "여행을 찾을 수 없습니다.",
+          });
+        }
 
         const userResult = await client.query(
           "SELECT id FROM users WHERE id = $1",
@@ -952,6 +987,17 @@ app.post(
           return res.status(409).json({
             message:
               "이미 다른 사용자와 연결된 여행 멤버입니다.",
+          });
+        }
+
+        if (
+          !member.user_id &&
+          member.status !== "placeholder"
+        ) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({
+            message:
+              "참여 대기 중인 여행 멤버만 연결할 수 있습니다.",
           });
         }
 

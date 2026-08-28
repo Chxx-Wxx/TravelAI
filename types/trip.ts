@@ -114,10 +114,18 @@ export interface Expense {
   paymentMethod?: PaymentMethod;
 
   // 공동 지출
+  paidByMemberId?: string;
+  participantMemberIds?: string[];
+
+  // 이름 기반 구형 로컬 데이터 호환용
   payer?: string;
   participants?: string[];
 
   // 돈 빌려주기
+  lenderMemberId?: string;
+  borrowerMemberId?: string;
+
+  // 이름 기반 구형 로컬 데이터 호환용
   lender?: string;
   borrower?: string;
   
@@ -146,17 +154,36 @@ export interface ExpenseSettings {
 
 // 실제로 사람끼리 돈을 주고받아서
 // 정산이 끝났다는 기록
+export interface ExpenseSettlementRelation {
+  id: string;
+  expenseId: string;
+  kind: "shared" | "loan";
+  fromMemberId: string;
+  toMemberId: string;
+  amountKrw: number;
+}
+
 export interface SettlementPayment {
   id: string;
 
-  from: string;
-  to: string;
+  source?: "final" | "loan";
+
+  fromMemberId?: string;
+  toMemberId?: string;
+
+  // 이름 기반 구형 로컬 데이터 호환용
+  from?: string;
+  to?: string;
 
   amountKrw: number;
 
   date: string;
 
   memo?: string;
+
+  // 이 최종 정산으로 해소된 개별 expense 관계.
+  // 구형 payment에는 없을 수 있다.
+  resolvedRelations?: ExpenseSettlementRelation[];
 }
 export interface PackingItem {
   id: string;

@@ -864,6 +864,31 @@ export default function CreateTripScreen() {
             handleSave
           }
         />
+
+        {__DEV__ ? (
+          <Pressable
+            onPress={() =>
+              router.push(
+                "/trip/join-dev"
+              )
+            }
+            style={{
+              marginTop: 14,
+              paddingVertical: 12,
+              alignItems: "center",
+            }}
+          >
+            <Text
+              style={{
+                color: "#6B7280",
+                fontSize: 14,
+                fontWeight: "bold",
+              }}
+            >
+              개발용: 기존 여행 멤버 연결 테스트
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
     </ScrollView>
   );

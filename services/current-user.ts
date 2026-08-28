@@ -14,6 +14,8 @@ const API_URL =
 
 let currentUserPromise:
   Promise<AppUser> | null = null;
+let currentUserEnsurePromise:
+  Promise<AppUser> | null = null;
 
 // 로그인 전 단계의 로컬 identity이며 인증/권한 증명이 아니다.
 
@@ -68,16 +70,32 @@ async function ensureServerUser(
   return data.user;
 }
 
-export function getCurrentUser() {
-  if (!currentUserPromise) {
-    currentUserPromise =
+export function ensureCurrentUser() {
+  if (!currentUserEnsurePromise) {
+    currentUserEnsurePromise =
       getOrCreateUserId()
         .then(ensureServerUser)
+        .then((user) => {
+          currentUserPromise =
+            Promise.resolve(user);
+          return user;
+        })
         .catch((error) => {
           currentUserPromise = null;
           throw error;
+        })
+        .finally(() => {
+          currentUserEnsurePromise = null;
         });
   }
 
-  return currentUserPromise;
+  return currentUserEnsurePromise;
+}
+
+export function getCurrentUser() {
+  if (currentUserPromise) {
+    return currentUserPromise;
+  }
+
+  return ensureCurrentUser();
 }

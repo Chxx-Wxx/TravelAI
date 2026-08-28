@@ -1,50 +1,72 @@
-# Welcome to your Expo app 👋
+# TravelAI
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+TravelAI는 실제 여행 중 일정, 장소, 지도, 날씨, 준비물, 예산과 공동 정산을 한곳에서
+관리하기 위한 React Native/Expo 앱이다. 현재 첫 사용 시나리오는 일본 여행이지만
+도시나 인원수를 특정 값에 고정하지 않는다.
 
-## Get started
+## 기술 구성
 
-1. Install dependencies
+* Expo Router, React Native, TypeScript
+* Express API (`server/server.js`)
+* Neon PostgreSQL (`DATABASE_URL`이 없으면 개발용 in-memory fallback)
+* Google Places API (New), Google Maps
+* Open-Meteo 날씨 API
+* AsyncStorage 기반 trip-scoped 예산/지출/정산/준비물 데이터
 
-   ```bash
-   npm install
-   ```
+## 로컬 실행
 
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+루트와 서버 의존성을 설치한다.
 
 ```bash
-npm run reset-project
+npm install
+cd server
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+프론트 `.env`에는 Express 서버 주소를 설정한다.
 
-## Learn more
+```env
+EXPO_PUBLIC_API_URL=https://your-server-url.example
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+서버의 `server/.env`에는 필요한 환경변수를 설정한다. 실제 값은 Git에 올리지 않는다.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```env
+GOOGLE_MAPS_API_KEY=YOUR_KEY
+DATABASE_URL=YOUR_NEON_CONNECTION_STRING
+```
 
-## Join the community
+PostgreSQL을 사용할 때 최초 한 번 스키마를 초기화한다.
 
-Join our community of developers creating universal apps.
+```bash
+cd server
+npm run db:init
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Express와 Expo를 각각 실행한다.
+
+```bash
+cd server
+npm start
+```
+
+```bash
+npx expo start
+```
+
+실기기에서 로컬 서버에 직접 접근할 수 없는 환경에서는 Express에 ngrok을 사용하고,
+Expo 연결도 필요하면 `npx expo start --tunnel`을 사용한다. 두 tunnel은 역할이 다르다.
+
+## 개발 문서
+
+현재 구현 상태와 데이터 구조는 [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md), 작업 원칙은
+[AGENTS.md](AGENTS.md)를 확인한다. 문서보다 실제 코드가 최신일 수 있으므로 변경 전 관련 코드를
+먼저 확인한다.
+
+검사는 다음 명령으로 실행한다.
+
+```bash
+npx tsc --noEmit
+npm run lint
+git diff --check
+```
