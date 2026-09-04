@@ -4,6 +4,7 @@ import {
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -18,6 +19,7 @@ import {
 
 import MapView, {
   Marker,
+  Polyline,
 } from "react-native-maps";
 
 import {
@@ -29,6 +31,17 @@ import {
 } from "../../lib/schedule-location";
 
 import {
+  getInitialTripDate,
+  isDateWithinTrip,
+} from "../../lib/trip-date";
+
+import {
+  ComputedRoute,
+  computeRoute,
+  RouteCoordinate,
+} from "../../services/route";
+
+import {
   fetchSchedules,
 } from "../../services/schedule";
 
@@ -36,6 +49,152 @@ import {
   Schedule,
   Trip,
 } from "../../types";
+
+type RouteSegmentStatus =
+  | "loading"
+  | "success"
+  | "error"
+  | "unavailable";
+
+type RouteSegment = {
+  key: string;
+  fromScheduleId: string;
+  toScheduleId: string;
+  status: RouteSegmentStatus;
+  origin?: RouteCoordinate;
+  destination?: RouteCoordinate;
+  route?: ComputedRoute;
+};
+
+type RouteSnapshot = {
+  date: string | null;
+  scheduleSignature: string | null;
+  segments: RouteSegment[];
+};
+
+type ScheduleMarker = {
+  schedule: Schedule;
+  displayOrder: number;
+};
+
+function createRouteSegments(
+  schedules: Schedule[]
+): RouteSegment[] {
+  return schedules
+    .slice(0, -1)
+    .map((schedule, index) => {
+      const nextSchedule =
+        schedules[index + 1];
+
+      if (
+        !hasValidScheduleLocation(schedule) ||
+        !hasValidScheduleLocation(nextSchedule)
+      ) {
+        return {
+          key: `${index}:${schedule.id}:${nextSchedule.id}`,
+          fromScheduleId: schedule.id,
+          toScheduleId: nextSchedule.id,
+          status: "unavailable",
+        };
+      }
+
+      return {
+        key: `${index}:${schedule.id}:${nextSchedule.id}`,
+        fromScheduleId: schedule.id,
+        toScheduleId: nextSchedule.id,
+        status: "loading",
+        origin: {
+          latitude: schedule.latitude,
+          longitude: schedule.longitude,
+        },
+        destination: {
+          latitude: nextSchedule.latitude,
+          longitude: nextSchedule.longitude,
+        },
+      };
+    });
+}
+
+function createScheduleRouteSignature(
+  schedules: Schedule[]
+) {
+  return schedules
+    .map((schedule, index) => {
+      if (!hasValidScheduleLocation(schedule)) {
+        return `${index}:${schedule.id}:unlinked`;
+      }
+
+      return [
+        index,
+        schedule.id,
+        schedule.latitude,
+        schedule.longitude,
+      ].join(":");
+    })
+    .join("|");
+}
+
+function isValidRouteCoordinate(
+  value: unknown
+) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const coordinate = value as Partial<RouteCoordinate>;
+
+  return (
+    typeof coordinate.latitude === "number" &&
+    Number.isFinite(coordinate.latitude) &&
+    coordinate.latitude >= -90 &&
+    coordinate.latitude <= 90 &&
+    typeof coordinate.longitude === "number" &&
+    Number.isFinite(coordinate.longitude) &&
+    coordinate.longitude >= -180 &&
+    coordinate.longitude <= 180
+  );
+}
+
+const MAX_RENDERABLE_ROUTE_COORDINATES = 2_000;
+
+function isRenderableRouteGeometry(
+  value: unknown
+): value is RouteCoordinate[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 1 &&
+    value.length <= MAX_RENDERABLE_ROUTE_COORDINATES &&
+    value.every(isValidRouteCoordinate)
+  );
+}
+
+function logRouteDiagnostics(
+  date: string,
+  segments: RouteSegment[]
+) {
+  if (!__DEV__) {
+    return;
+  }
+
+  const totalCoordinates = segments.reduce(
+    (total, segment) =>
+      total + (segment.route?.coordinates.length ?? 0),
+    0
+  );
+  const successCount = segments.filter(
+    (segment) => segment.status === "success"
+  ).length;
+  const unavailableCount = segments.filter(
+    (segment) => segment.status === "unavailable"
+  ).length;
+  const errorCount = segments.filter(
+    (segment) => segment.status === "error"
+  ).length;
+
+  console.info(
+    `[Map route] day=${date} segments=${segments.length} success=${successCount} unavailable=${unavailableCount} error=${errorCount} coordinates=${totalCoordinates}`
+  );
+}
 
 export default function MapScreen() {
   const mapRef =
@@ -67,6 +226,109 @@ export default function MapScreen() {
       string | null
     >(null);
 
+  const selectedDateRef =
+    useRef<string | null>(null);
+
+  const [
+    renderedMapDate,
+    setRenderedMapDate,
+  ] = useState<string | null>(null);
+
+  const [mapGeneration, setMapGeneration] =
+    useState(0);
+
+  const [readyMapInstanceKey, setReadyMapInstanceKey] =
+    useState<string | null>(null);
+
+  const [routeSnapshot, setRouteSnapshot] =
+    useState<RouteSnapshot>({
+      date: null,
+      scheduleSignature: null,
+      segments: [],
+    });
+
+  const routeRequestVersionRef =
+    useRef(0);
+
+  const initializedTripIdRef =
+    useRef<string | null>(null);
+
+  const renderedMapDateRef =
+    useRef<string | null>(null);
+  const pendingMapDateRef =
+    useRef<string | null>(null);
+  const mapReadyRef = useRef(false);
+  const mapTransitionInFlightRef =
+    useRef(false);
+  const mapGenerationRef = useRef(0);
+  const mapTransitionFrameRef =
+    useRef<ReturnType<typeof requestAnimationFrame> | null>(
+      null
+    );
+  const activeMapInstanceKeyRef =
+    useRef<string | null>(null);
+
+  const beginMapTransition = useCallback(
+    (date: string) => {
+      const generation = mapGenerationRef.current + 1;
+
+      mapGenerationRef.current = generation;
+      mapTransitionInFlightRef.current = true;
+      mapReadyRef.current = false;
+      renderedMapDateRef.current = date;
+      pendingMapDateRef.current = null;
+      setReadyMapInstanceKey(null);
+      setRenderedMapDate(date);
+      setMapGeneration(generation);
+    },
+    []
+  );
+
+  const requestMapDate = useCallback(
+    (date: string) => {
+      pendingMapDateRef.current = date;
+
+      if (mapTransitionInFlightRef.current) {
+        return;
+      }
+
+      if (
+        mapReadyRef.current &&
+        renderedMapDateRef.current === date
+      ) {
+        pendingMapDateRef.current = null;
+        return;
+      }
+
+      beginMapTransition(date);
+    },
+    [beginMapTransition]
+  );
+
+  const resetMapTransition = useCallback(() => {
+    if (mapTransitionFrameRef.current !== null) {
+      cancelAnimationFrame(mapTransitionFrameRef.current);
+      mapTransitionFrameRef.current = null;
+    }
+
+    pendingMapDateRef.current = null;
+    mapTransitionInFlightRef.current = false;
+    mapReadyRef.current = false;
+    renderedMapDateRef.current = null;
+    activeMapInstanceKeyRef.current = null;
+
+    const generation = mapGenerationRef.current + 1;
+    mapGenerationRef.current = generation;
+    setRenderedMapDate(null);
+    setReadyMapInstanceKey(null);
+    setMapGeneration(generation);
+    setRouteSnapshot({
+      date: null,
+      scheduleSignature: null,
+      segments: [],
+    });
+  }, []);
+
   // 여행 / 일정 불러오기
   const loadData =
     useCallback(
@@ -82,6 +344,10 @@ export default function MapScreen() {
           if (
             !tripData?.id
           ) {
+            initializedTripIdRef.current = null;
+            selectedDateRef.current = null;
+            resetMapTransition();
+
             setSchedules(
               []
             );
@@ -91,6 +357,39 @@ export default function MapScreen() {
             );
 
             return;
+          }
+
+          const tripChanged =
+            initializedTripIdRef.current !== tripData.id;
+          const initialSelectedDate =
+            getInitialTripDate(tripData);
+          const currentSelectedDate =
+            selectedDateRef.current;
+          const nextSelectedDate =
+            tripChanged ||
+            !currentSelectedDate ||
+            !isDateWithinTrip(
+              currentSelectedDate,
+              tripData
+            )
+              ? initialSelectedDate
+              : currentSelectedDate;
+
+          initializedTripIdRef.current = tripData.id;
+
+          if (tripChanged) {
+            setSchedules([]);
+            resetMapTransition();
+          }
+
+          selectedDateRef.current = nextSelectedDate;
+          setSelectedDate(nextSelectedDate);
+
+          if (
+            nextSelectedDate &&
+            renderedMapDateRef.current !== nextSelectedDate
+          ) {
+            requestMapDate(nextSelectedDate);
           }
 
           const scheduleData =
@@ -113,37 +412,6 @@ export default function MapScreen() {
           setSchedules(
             sorted
           );
-
-          if (
-            sorted.length >
-            0
-          ) {
-            setSelectedDate(
-              (
-                current
-              ) => {
-                if (
-                  current &&
-                  sorted.some(
-                    (
-                      schedule
-                    ) =>
-                      schedule.date ===
-                      current
-                  )
-                ) {
-                  return current;
-                }
-
-                return sorted[0]
-                  .date;
-              }
-            );
-          } else {
-            setSelectedDate(
-              null
-            );
-          }
         } catch (error) {
           console.error(
             "지도 데이터 불러오기 실패:",
@@ -155,7 +423,7 @@ export default function MapScreen() {
           );
         }
       },
-      []
+      [requestMapDate, resetMapTransition]
     );
 
   useFocusEffect(
@@ -200,14 +468,70 @@ export default function MapScreen() {
       selectedDate,
     ]);
 
-  // 좌표가 있는 일정
-  const schedulesWithCoordinates =
+  const renderedMapSchedules =
     useMemo(() => {
-      return selectedSchedules.filter(
-        hasValidScheduleLocation
+      if (!renderedMapDate) {
+        return [];
+      }
+
+      return schedules.filter(
+        (schedule) =>
+          schedule.date === renderedMapDate
+      );
+    }, [renderedMapDate, schedules]);
+
+  const scheduleRouteSignature = useMemo(
+    () => createScheduleRouteSignature(selectedSchedules),
+    [selectedSchedules]
+  );
+
+  const renderedScheduleRouteSignature = useMemo(
+    () => createScheduleRouteSignature(renderedMapSchedules),
+    [renderedMapSchedules]
+  );
+
+  const initialSelectedRouteSegments = useMemo(
+    () => createRouteSegments(selectedSchedules),
+    [selectedSchedules]
+  );
+
+  const initialRenderedRouteSegments = useMemo(
+    () => createRouteSegments(renderedMapSchedules),
+    [renderedMapSchedules]
+  );
+
+  const routeSegments =
+    routeSnapshot.date === selectedDate &&
+    routeSnapshot.scheduleSignature ===
+      scheduleRouteSignature
+      ? routeSnapshot.segments
+      : initialSelectedRouteSegments;
+
+  const mapRouteSegments =
+    routeSnapshot.date === renderedMapDate &&
+    routeSnapshot.scheduleSignature ===
+      renderedScheduleRouteSignature
+      ? routeSnapshot.segments
+      : initialRenderedRouteSegments;
+
+  // 전체 일정 순번을 보존한 지도 marker
+  const scheduleMarkers =
+    useMemo(() => {
+      return renderedMapSchedules.reduce<ScheduleMarker[]>(
+        (markers, schedule, index) => {
+          if (hasValidScheduleLocation(schedule)) {
+            markers.push({
+              schedule,
+              displayOrder: index + 1,
+            });
+          }
+
+          return markers;
+        },
+        []
       );
     }, [
-      selectedSchedules,
+      renderedMapSchedules,
     ]);
 
   // 여행 몇 일차인지 계산
@@ -299,11 +623,49 @@ export default function MapScreen() {
     return `${hours}시간 ${remainingMinutes}분`;
   }
 
-  // 일정 좌표에 맞춰 지도 조정
-  function focusSchedules(
-    schedulesToFocus: Schedule[]
+  function formatRouteDistance(
+    distanceMeters: number
   ) {
-    const coordinates =
+    if (distanceMeters < 1000) {
+      return `${Math.round(distanceMeters)}m`;
+    }
+
+    const kilometers = Number(
+      (distanceMeters / 1000).toFixed(1)
+    );
+
+    return `${kilometers}km`;
+  }
+
+  function formatRouteDuration(
+    durationSeconds: number
+  ) {
+    const totalMinutes = Math.round(
+      durationSeconds / 60
+    );
+
+    if (totalMinutes < 1) {
+      return "1분 미만";
+    }
+
+    if (totalMinutes < 60) {
+      return `${totalMinutes}분`;
+    }
+
+    const hours = Math.floor(
+      totalMinutes / 60
+    );
+    const minutes = totalMinutes % 60;
+
+    return minutes === 0
+      ? `${hours}시간`
+      : `${hours}시간 ${minutes}분`;
+  }
+
+  // 일정 좌표에 맞춰 지도 조정
+  const focusSchedules = useCallback(
+    (schedulesToFocus: Schedule[]) => {
+      const coordinates =
       schedulesToFocus
         .filter(
           hasValidScheduleLocation
@@ -320,79 +682,261 @@ export default function MapScreen() {
           })
         );
 
-    if (
-      coordinates.length ===
-      0
-    ) {
+      if (
+        coordinates.length ===
+        0
+      ) {
+        return;
+      }
+
+      if (
+        coordinates.length ===
+        1
+      ) {
+        mapRef.current?.animateToRegion(
+          {
+            latitude:
+              coordinates[0]
+                .latitude,
+
+            longitude:
+              coordinates[0]
+                .longitude,
+
+            latitudeDelta:
+              0.03,
+
+            longitudeDelta:
+              0.03,
+          },
+          500
+        );
+
+        return;
+      }
+
+      mapRef.current?.fitToCoordinates(
+        coordinates,
+        {
+          edgePadding: {
+            top: 80,
+            right: 55,
+            bottom: 80,
+            left: 55,
+          },
+
+          animated: true,
+        }
+      );
+    },
+    []
+  );
+
+  useEffect(() => {
+    const requestVersion =
+      routeRequestVersionRef.current + 1;
+    routeRequestVersionRef.current =
+      requestVersion;
+
+    const initialSegments = initialRenderedRouteSegments;
+
+    if (!trip?.id || !renderedMapDate) {
       return;
     }
 
-    if (
-      coordinates.length ===
-      1
-    ) {
-      mapRef.current?.animateToRegion(
-        {
-          latitude:
-            coordinates[0]
-              .latitude,
-
-          longitude:
-            coordinates[0]
-              .longitude,
-
-          latitudeDelta:
-            0.03,
-
-          longitudeDelta:
-            0.03,
-        },
-        500
+    const computableSegments =
+      initialSegments.filter(
+        (segment) =>
+          segment.status === "loading"
       );
 
+    if (computableSegments.length === 0) {
+      logRouteDiagnostics(
+        renderedMapDate,
+        initialSegments
+      );
       return;
     }
 
-    mapRef.current?.fitToCoordinates(
-      coordinates,
-      {
-        edgePadding: {
-          top: 80,
-          right: 55,
-          bottom: 80,
-          left: 55,
-        },
+    let cancelled = false;
+    const abortController = new AbortController();
 
-        animated: true,
+    void (async () => {
+      const results =
+        await Promise.allSettled(
+          computableSegments.map(
+            async (segment) => ({
+              key: segment.key,
+              route: await computeRoute({
+                tripId: trip.id as string,
+                date: renderedMapDate,
+                origin:
+                  segment.origin as RouteCoordinate,
+                destination:
+                  segment.destination as RouteCoordinate,
+                travelMode: "WALK",
+              }, abortController.signal),
+            })
+          )
+        );
+
+      if (
+        cancelled ||
+        routeRequestVersionRef.current !==
+          requestVersion
+      ) {
+        return;
       }
-    );
-  }
+
+      const resolvedSegments = new Map<
+        string,
+        RouteSegment
+      >();
+
+      results.forEach((result, index) => {
+        const segment =
+          computableSegments[index];
+
+        if (result.status === "fulfilled") {
+          resolvedSegments.set(segment.key, {
+            ...segment,
+            status: "success",
+            route: result.value.route,
+          });
+        } else {
+          resolvedSegments.set(segment.key, {
+            ...segment,
+            status: "error",
+          });
+        }
+      });
+
+      const nextSegments =
+        initialSegments.map(
+          (segment) =>
+            resolvedSegments.get(
+              segment.key
+            ) ?? segment
+        );
+
+      setRouteSnapshot({
+        date: renderedMapDate,
+        scheduleSignature:
+          renderedScheduleRouteSignature,
+        segments: nextSegments,
+      });
+
+      logRouteDiagnostics(
+        renderedMapDate,
+        nextSegments
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+      abortController.abort();
+    };
+  }, [
+    renderedMapDate,
+    initialRenderedRouteSegments,
+    renderedScheduleRouteSignature,
+    trip?.id,
+  ]);
 
   function handleSelectDate(
     date: string
   ) {
-    setSelectedDate(
-      date
-    );
-
-    const daySchedules =
-      schedules.filter(
-        (
-          schedule
-        ) =>
-          schedule.date ===
-          date
-      );
-
-    setTimeout(
-      () => {
-        focusSchedules(
-          daySchedules
-        );
-      },
-      100
-    );
+    selectedDateRef.current = date;
+    setSelectedDate(date);
+    requestMapDate(date);
   }
+
+  const mapInstanceKey = [
+    "map",
+    mapGeneration,
+    renderedMapDate ?? "none",
+    renderedScheduleRouteSignature,
+  ].join(":");
+
+  const handleMapRef = useCallback(
+    (instance: MapView | null) => {
+      mapRef.current = instance;
+
+      if (!instance) {
+        return;
+      }
+
+      activeMapInstanceKeyRef.current = mapInstanceKey;
+      mapReadyRef.current = false;
+
+      if (renderedMapDate) {
+        mapTransitionInFlightRef.current = true;
+      }
+    },
+    [mapInstanceKey, renderedMapDate]
+  );
+
+  const handleMapReady = useCallback(
+    (
+      date: string | null,
+      generation: number,
+      instanceKey: string,
+      schedulesToFocus: Schedule[]
+    ) => {
+      if (
+        !date ||
+        generation !== mapGenerationRef.current ||
+        date !== renderedMapDateRef.current ||
+        instanceKey !== activeMapInstanceKeyRef.current
+      ) {
+        return;
+      }
+
+      mapReadyRef.current = true;
+      setReadyMapInstanceKey(instanceKey);
+      focusSchedules(schedulesToFocus);
+
+      if (mapTransitionFrameRef.current !== null) {
+        cancelAnimationFrame(mapTransitionFrameRef.current);
+      }
+
+      mapTransitionFrameRef.current = requestAnimationFrame(
+        () => {
+          mapTransitionFrameRef.current = null;
+
+          if (
+            generation !== mapGenerationRef.current ||
+            date !== renderedMapDateRef.current ||
+            instanceKey !== activeMapInstanceKeyRef.current
+          ) {
+            return;
+          }
+
+          mapTransitionInFlightRef.current = false;
+
+          const pendingDate = pendingMapDateRef.current;
+
+          if (!pendingDate || pendingDate === date) {
+            pendingMapDateRef.current = null;
+            return;
+          }
+
+          pendingMapDateRef.current = null;
+          beginMapTransition(pendingDate);
+        }
+      );
+    },
+    [beginMapTransition, focusSchedules]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (mapTransitionFrameRef.current !== null) {
+        cancelAnimationFrame(mapTransitionFrameRef.current);
+        mapTransitionFrameRef.current = null;
+      }
+    };
+  }, []);
 
   const selectedDayNumber =
     selectedDate
@@ -586,7 +1130,8 @@ export default function MapScreen() {
           }}
         >
           <MapView
-            ref={mapRef}
+            key={mapInstanceKey}
+            ref={handleMapRef}
             style={{
               width: "100%",
               height: "100%",
@@ -605,16 +1150,43 @@ export default function MapScreen() {
                 0.15,
             }}
             onMapReady={() => {
-              focusSchedules(
-                schedulesWithCoordinates
+              handleMapReady(
+                renderedMapDate,
+                mapGeneration,
+                mapInstanceKey,
+                renderedMapSchedules
               );
             }}
           >
-            {schedulesWithCoordinates.map(
-              (
-                schedule,
-                index
-              ) => (
+            {(readyMapInstanceKey === mapInstanceKey
+              ? mapRouteSegments
+              : []
+            ).map((segment) => {
+              const coordinates =
+                segment.route?.coordinates;
+
+              if (
+                routeSnapshot.date !== renderedMapDate ||
+                routeSnapshot.scheduleSignature !==
+                  renderedScheduleRouteSignature ||
+                segment.status !== "success" ||
+                !isRenderableRouteGeometry(coordinates)
+              ) {
+                return null;
+              }
+
+              return (
+                <Polyline
+                  key={`${mapInstanceKey}:${segment.key}`}
+                  coordinates={coordinates}
+                  strokeColor="#2563EB"
+                  strokeWidth={5}
+                />
+              );
+            })}
+
+            {scheduleMarkers.map(
+              ({ schedule, displayOrder }) => (
                 <Marker
                   key={
                     schedule.id
@@ -626,7 +1198,7 @@ export default function MapScreen() {
                     longitude:
                       schedule.longitude as number,
                   }}
-                  title={`${index + 1}. ${schedule.title}`}
+                  title={`${displayOrder}. ${schedule.title}`}
                   description={
                     schedule.location
                   }
@@ -660,7 +1232,7 @@ export default function MapScreen() {
                         fontSize: 15,
                       }}
                     >
-                      {index + 1}
+                      {displayOrder}
                     </Text>
                   </View>
                 </Marker>
@@ -671,10 +1243,11 @@ export default function MapScreen() {
 
         {/* 좌표 없음 안내 */}
 
-        {selectedSchedules.length >
+          {selectedSchedules.length >
           0 &&
-          schedulesWithCoordinates.length ===
-            0 && (
+          !selectedSchedules.some(
+            hasValidScheduleLocation
+          ) && (
             <Text
               style={{
                 marginTop: 10,
@@ -767,90 +1340,133 @@ export default function MapScreen() {
                   schedule.durationMinutes
                 );
 
+              const nextSchedule =
+                selectedSchedules[index + 1];
+              const nextHasCoordinates =
+                nextSchedule
+                  ? hasValidScheduleLocation(
+                      nextSchedule
+                    )
+                  : false;
+              const routeSegment =
+                routeSegments[index];
+
+              let routeLabel: string | null =
+                null;
+
+              if (nextSchedule) {
+                if (
+                  !hasCoordinates ||
+                  !nextHasCoordinates
+                ) {
+                  routeLabel =
+                    "위치 미등록 일정 구간";
+                } else if (
+                  routeSegment?.status ===
+                    "success" &&
+                  routeSegment.route
+                ) {
+                  routeLabel = `도보 ${formatRouteDuration(
+                    routeSegment.route
+                      .durationSeconds
+                  )} · ${formatRouteDistance(
+                    routeSegment.route
+                      .distanceMeters
+                  )}`;
+                } else if (
+                  routeSegment?.status === "error"
+                ) {
+                  routeLabel =
+                    "경로 정보를 불러올 수 없음";
+                } else {
+                  routeLabel =
+                    "경로 계산 중...";
+                }
+              }
+
               return (
-                <Pressable
+                <View
                   key={
                     schedule.id
                   }
-                  onPress={() => {
-                    if (
-                      !hasCoordinates
-                    ) {
-                      return;
-                    }
-
-                    mapRef.current?.animateToRegion(
-                      {
-                        latitude:
-                          schedule.latitude as number,
-
-                        longitude:
-                          schedule.longitude as number,
-
-                        latitudeDelta:
-                          0.02,
-
-                        longitudeDelta:
-                          0.02,
-                      },
-                      400
-                    );
-                  }}
-                  style={{
-                    flexDirection:
-                      "row",
-
-                    marginTop: 14,
-
-                    alignItems:
-                      "flex-start",
-                  }}
                 >
-                  {/* 순서 번호 */}
+                  <Pressable
+                    onPress={() => {
+                      if (
+                        !hasCoordinates ||
+                        !mapReadyRef.current ||
+                        selectedDate !==
+                          renderedMapDateRef.current
+                      ) {
+                        return;
+                      }
 
-                  <View
+                      mapRef.current?.animateToRegion(
+                        {
+                          latitude:
+                            schedule.latitude as number,
+
+                          longitude:
+                            schedule.longitude as number,
+
+                          latitudeDelta:
+                            0.02,
+
+                          longitudeDelta:
+                            0.02,
+                        },
+                        400
+                      );
+                    }}
                     style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 18,
-
-                      backgroundColor:
-                        hasCoordinates
-                          ? "#3B82F6"
-                          : "#CBD5E1",
-
-                      justifyContent:
-                        "center",
-
+                      flexDirection:
+                        "row",
+                      marginTop: 14,
                       alignItems:
-                        "center",
-
-                      marginTop: 5,
+                        "flex-start",
                     }}
                   >
-                    <Text
+                    {/* 순서 번호 */}
+
+                    <View
                       style={{
-                        color: "white",
-                        fontWeight:
-                          "bold",
+                        width: 36,
+                        height: 36,
+                        borderRadius: 18,
+                        backgroundColor:
+                          hasCoordinates
+                            ? "#3B82F6"
+                            : "#CBD5E1",
+                        justifyContent:
+                          "center",
+                        alignItems:
+                          "center",
+                        marginTop: 5,
                       }}
                     >
-                      {index + 1}
-                    </Text>
-                  </View>
+                      <Text
+                        style={{
+                          color: "white",
+                          fontWeight:
+                            "bold",
+                        }}
+                      >
+                        {index + 1}
+                      </Text>
+                    </View>
 
-                  {/* 일정 카드 */}
+                    {/* 일정 카드 */}
 
-                  <View
-                    style={{
-                      flex: 1,
-                      marginLeft: 12,
-                      backgroundColor:
-                        "white",
-                      borderRadius: 16,
-                      padding: 16,
-                    }}
-                  >
+                    <View
+                      style={{
+                        flex: 1,
+                        marginLeft: 12,
+                        backgroundColor:
+                          "white",
+                        borderRadius: 16,
+                        padding: 16,
+                      }}
+                    >
                     {/* 시간 */}
 
                     <Text
@@ -997,8 +1613,56 @@ export default function MapScreen() {
                         지도 위치 미등록
                       </Text>
                     )}
-                  </View>
-                </Pressable>
+                    </View>
+                  </Pressable>
+
+                  {routeLabel && (
+                    <View
+                      style={{
+                        marginLeft: 17,
+                        paddingTop: 8,
+                        paddingBottom: 2,
+                        flexDirection: "row",
+                        alignItems: "center",
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color:
+                            routeSegment?.status ===
+                            "error"
+                              ? "#DC2626"
+                              : routeSegment?.status ===
+                                  "success"
+                                ? "#2563EB"
+                                : "#9CA3AF",
+                          fontSize: 14,
+                          fontWeight: "bold",
+                        }}
+                      >
+                        ↓
+                      </Text>
+
+                      <Text
+                        style={{
+                          marginLeft: 8,
+                          color:
+                            routeSegment?.status ===
+                            "error"
+                              ? "#DC2626"
+                              : routeSegment?.status ===
+                                  "success"
+                                ? "#2563EB"
+                                : "#6B7280",
+                          fontSize: 12,
+                          fontWeight: "bold",
+                        }}
+                      >
+                        {routeLabel}
+                      </Text>
+                    </View>
+                  )}
+                </View>
               );
             }
           )

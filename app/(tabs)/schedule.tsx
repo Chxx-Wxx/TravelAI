@@ -6,6 +6,7 @@ import {
 import {
   useCallback,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -22,6 +23,11 @@ import AppButton from "../../components/AppButton";
 import {
   hasValidScheduleLocation,
 } from "../../lib/schedule-location";
+
+import {
+  getInitialTripDate,
+  getTripCalendarDates,
+} from "../../lib/trip-date";
 
 import {
   getCurrentTripWithRecovery,
@@ -248,76 +254,138 @@ export default function ScheduleScreen() {
   ] =
     useState(false);
 
-  const loadData =
-  useCallback(
-    async () => {
-      try {
-        setLoading(true);
+  const [scrollViewportHeight, setScrollViewportHeight] =
+    useState(0);
 
-        // 먼저 현재 여행 정보를 가져온다.
-        const tripData =
-          await getCurrentTripWithRecovery();
+  const scrollViewRef =
+    useRef<ScrollView | null>(null);
+  const daySectionOffsetsRef =
+    useRef<Record<string, number>>({});
+  const pendingInitialScrollDateRef =
+    useRef<string | null>(null);
+  const initializedScrollTripIdRef =
+    useRef<string | null>(null);
+  const scrollContentReadyRef =
+    useRef(false);
 
-        setTrip(tripData);
+  const tryInitialScroll = useCallback(() => {
+    const targetDate =
+      pendingInitialScrollDateRef.current;
+    const scrollView = scrollViewRef.current;
 
-        // 여행이 없으면 일정도 비운다.
-        if (!tripData) {
-          setSchedules([]);
-          return;
-        }
+    if (
+      !targetDate ||
+      !scrollView ||
+      !scrollContentReadyRef.current
+    ) {
+      return;
+    }
 
-        // 서버에서 받은 여행 ID가 없으면
-        // 해당 여행의 일정을 조회할 수 없다.
-        if (!tripData.id) {
-          console.error(
-            "여행 ID가 없습니다."
-          );
+    const sectionOffset =
+      daySectionOffsetsRef.current[targetDate];
 
-          setSchedules([]);
+    if (typeof sectionOffset !== "number") {
+      return;
+    }
 
-          return;
-        }
+    scrollView.scrollTo({
+      y: Math.max(0, sectionOffset - 12),
+      animated: false,
+    });
+    pendingInitialScrollDateRef.current = null;
+  }, []);
 
-        // 현재 여행 ID에 해당하는 일정만 조회한다.
-        const scheduleData =
-          await fetchSchedules(
-            tripData.id
-          );
+  const loadData = useCallback(async () => {
+    try {
+      setLoading(true);
 
-        const sorted =
-          [...scheduleData].sort(
-            (a, b) => {
-              const first =
-                `${a.date} ${a.time}`;
+      // 먼저 현재 여행 정보를 가져온다.
+      const tripData =
+        await getCurrentTripWithRecovery();
 
-              const second =
-                `${b.date} ${b.time}`;
+      setTrip(tripData);
 
-              return first.localeCompare(
-                second
-              );
-            }
-          );
-
-        setSchedules(sorted);
-      } catch (error) {
-        console.error(
-          "일정 불러오기 실패:",
-          error
-        );
-
-        Alert.alert(
-          "일정 불러오기 실패",
-          "서버에서 일정을 불러오지 못했습니다. 백엔드와 ngrok 연결을 확인해주세요."
-        );
-      } finally {
-        setLoading(false);
+      // 여행이 없으면 일정도 비운다.
+      if (!tripData) {
+        initializedScrollTripIdRef.current = null;
+        pendingInitialScrollDateRef.current = null;
+        daySectionOffsetsRef.current = {};
+        scrollContentReadyRef.current = false;
+        setSchedules([]);
+        return;
       }
-    },
-    []
-  );
-  
-    useFocusEffect(
+
+      // 서버에서 받은 여행 ID가 없으면
+      // 해당 여행의 일정을 조회할 수 없다.
+      if (!tripData.id) {
+        console.error(
+          "여행 ID가 없습니다."
+        );
+
+        setSchedules([]);
+        initializedScrollTripIdRef.current = null;
+        pendingInitialScrollDateRef.current = null;
+        daySectionOffsetsRef.current = {};
+        scrollContentReadyRef.current = false;
+        return;
+      }
+
+      if (
+        initializedScrollTripIdRef.current !== tripData.id
+      ) {
+        const targetDate =
+          getInitialTripDate(tripData);
+
+        initializedScrollTripIdRef.current = targetDate
+          ? tripData.id
+          : null;
+        pendingInitialScrollDateRef.current = targetDate;
+        daySectionOffsetsRef.current = {};
+        scrollContentReadyRef.current = false;
+      }
+
+      // 현재 여행 ID에 해당하는 일정만 조회한다.
+      const scheduleData =
+        await fetchSchedules(
+          tripData.id
+        );
+
+      const sorted =
+        [...scheduleData].sort(
+          (a, b) => {
+            const first =
+              `${a.date} ${a.time}`;
+
+            const second =
+              `${b.date} ${b.time}`;
+
+            return first.localeCompare(
+              second
+            );
+          }
+        );
+
+      setSchedules(sorted);
+    } catch (error) {
+      console.error(
+        "일정 불러오기 실패:",
+        error
+      );
+
+      Alert.alert(
+        "일정 불러오기 실패",
+        "서버에서 일정을 불러오지 못했습니다. 백엔드와 ngrok 연결을 확인해주세요."
+      );
+    } finally {
+      if (pendingInitialScrollDateRef.current) {
+        scrollContentReadyRef.current = false;
+      }
+
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
     useCallback(() => {
       loadData();
     }, [loadData])
@@ -374,6 +442,12 @@ export default function ScheduleScreen() {
         Schedule[]
       > = {};
 
+      if (trip) {
+        getTripCalendarDates(trip).forEach((date) => {
+          grouped[date] = [];
+        });
+      }
+
       schedules.forEach(
         (
           schedule
@@ -407,10 +481,11 @@ export default function ScheduleScreen() {
             dateB
           )
       );
-    }, [schedules]);
+    }, [schedules, trip]);
 
   return (
     <ScrollView
+      ref={scrollViewRef}
       style={{
         flex: 1,
         backgroundColor:
@@ -419,7 +494,19 @@ export default function ScheduleScreen() {
       contentContainerStyle={{
         paddingHorizontal: 20,
         paddingTop: 70,
-        paddingBottom: 120,
+        paddingBottom: Math.max(
+          120,
+          scrollViewportHeight - 100
+        ),
+      }}
+      onLayout={(event) => {
+        setScrollViewportHeight(
+          event.nativeEvent.layout.height
+        );
+      }}
+      onContentSizeChange={() => {
+        scrollContentReadyRef.current = true;
+        tryInitialScroll();
       }}
     >
       <Text
@@ -479,8 +566,7 @@ export default function ScheduleScreen() {
             서버에서 일정을 불러오는 중...
           </Text>
         </View>
-      ) : schedules.length ===
-        0 ? (
+      ) : groupedSchedules.length === 0 ? (
         <View
           style={{
             marginTop: 25,
@@ -530,6 +616,11 @@ export default function ScheduleScreen() {
                 key={
                   date
                 }
+                onLayout={(event) => {
+                  daySectionOffsetsRef.current[date] =
+                    event.nativeEvent.layout.y;
+                  tryInitialScroll();
+                }}
                 style={{
                   marginTop: 30,
                 }}
@@ -564,7 +655,24 @@ export default function ScheduleScreen() {
                   </Text>
                 </View>
 
-                {daySchedules.map(
+                {daySchedules.length === 0 ? (
+                  <View
+                    style={{
+                      backgroundColor: "white",
+                      borderRadius: 16,
+                      padding: 18,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: "#6B7280",
+                        fontSize: 14,
+                      }}
+                    >
+                      이 날은 아직 일정이 없습니다.
+                    </Text>
+                  </View>
+                ) : daySchedules.map(
                   (
                     schedule,
                     index

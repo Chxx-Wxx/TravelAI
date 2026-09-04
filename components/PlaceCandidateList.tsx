@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 
 import {
@@ -23,21 +23,20 @@ export default function PlaceCandidateList({
   onSelect,
   onSaveWithoutLocation,
 }: Props) {
-  const [visibleCount, setVisibleCount] = useState(
-    INITIAL_VISIBLE_RESULTS
-  );
+  const [expandedResultKey, setExpandedResultKey] =
+    useState<string | null>(null);
   const [previewPlace, setPreviewPlace] =
     useState<PlaceResult | null>(null);
   const resultKey = results
     .map((place) => place.id)
     .join("|");
 
-  useEffect(() => {
-    setVisibleCount(INITIAL_VISIBLE_RESULTS);
-  }, [resultKey]);
-
   if (results.length === 0) return null;
 
+  const visibleCount =
+    expandedResultKey === resultKey
+      ? MAX_VISIBLE_RESULTS
+      : INITIAL_VISIBLE_RESULTS;
   const maximum = Math.min(results.length, MAX_VISIBLE_RESULTS);
   const visibleResults = results.slice(0, visibleCount);
   const canShowMore = visibleCount < maximum;
@@ -126,7 +125,7 @@ export default function PlaceCandidateList({
 
       {canShowMore && (
         <Pressable
-          onPress={() => setVisibleCount(MAX_VISIBLE_RESULTS)}
+          onPress={() => setExpandedResultKey(resultKey)}
           style={{
             padding: 13,
             borderBottomWidth:

@@ -48,6 +48,10 @@ const quickQuestions = [
   "예산에 맞게 추천해줘",
 ];
 
+function createMessageId(role: ChatMessage["role"]) {
+  return `${role}-${Date.now()}`;
+}
+
 export default function AIScreen() {
   const [
     trip,
@@ -208,8 +212,7 @@ export default function AIScreen() {
 
     const userMessage:
       ChatMessage = {
-        id:
-          `user-${Date.now()}`,
+        id: createMessageId("user"),
 
         role:
           "user",
@@ -220,8 +223,7 @@ export default function AIScreen() {
 
     const assistantMessage:
       ChatMessage = {
-        id:
-          `assistant-${Date.now()}`,
+        id: createMessageId("assistant"),
 
         role:
           "assistant",

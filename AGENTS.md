@@ -57,10 +57,11 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 
 현재 프로젝트는 다음 기술을 사용한다.
 
-* React Native
-* Expo
-* TypeScript
-* Expo Router 기반 구조
+* React Native 0.86.3
+* Expo SDK 57 (`expo` 57.0.20)
+* React 19.2.3
+* TypeScript 6.0.3
+* Expo Router 57.0.19 기반 구조
 * AsyncStorage
 * expo-location
 * Node.js
@@ -69,12 +70,19 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 * dotenv
 * cors
 * Google Places API (New)
-* react-native-maps
+* react-native-maps 1.27.2
+* Google Routes API (현재 WALK)
 * Open-Meteo Geocoding / Forecast API
 * Git
 * GitHub
 
 저장소 코드에서 변경된 사실이 확인되지 않는 이상 위 구조를 기준으로 한다.
+
+현재 Expo Go SDK 57을 기준으로 개발한다. SDK 57 호환을 위해 적용된
+`expo-router/react-navigation`, `expo-router/js-tabs` import를 과거 직접
+`@react-navigation/*` import로 되돌리지 않는다. React Compiler/TypeScript 6 호환 수정과
+`app.json`에서 제거된 `newArchEnabled`, `android.edgeToEdgeEnabled`도 실제 문제 근거 없이
+복원하지 않는다.
 
 ---
 
@@ -126,10 +134,16 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 * 여행 API
 * 일정 API
 * 사용자 identity와 여행 멤버 API
+* Google Routes WALK 경로 API (`POST /routes/compute`)
 
 `DATABASE_URL`이 있으면 Neon PostgreSQL의 `trips`, `schedules`, `users`,
 `trip_members` 테이블을 사용한다. 환경변수가 없으면 개발 편의를 위해 동일 기능을
 in-memory 저장소로 fallback하며, 이 모드에서는 서버 재시작 시 데이터가 사라질 수 있다.
+
+route API는 `server/route-service.js`에서 입력과 좌표를 검증하고 Google Routes를 호출한다.
+route 결과는 24시간/최대 500개의 process memory cache와 같은 key의 in-flight Promise 공유를
+사용하며 DB에는 저장하지 않는다. cache key의 좌표는 소수점 5자리로 반올림되고 서버 재시작 시
+cache가 사라진다. API key는 기존 `GOOGLE_MAPS_API_KEY`만 서버에서 사용한다.
 
 예산, 지출, 정산, 준비물은 서버 API나 DB에 저장하지 않고 현재 tripId별
 AsyncStorage에 저장한다. `expense`, `settlement`, `packing` 테이블이 있다고 가정하지 않는다.
@@ -380,6 +394,15 @@ git push
 
 기능으로 관리하는 방향을 고려한다.
 
+일정 목록의 날짜 섹션 순서는 항상 여행 1일차부터 유지한다. 최초 진입 시에만 기기 로컬 오늘을
+여행 범위에 clamp한 날짜로 자동 scroll하고, 이후 사용자의 수동 scroll을 다시 덮어쓰지 않는다.
+UTC `toISOString()` 날짜로 바꾸거나 지도와 다른 초기 날짜 정책을 만들지 않는다.
+
+일정 생성·수정은 Safe Area/키보드를 고려한 하단 고정 저장 CTA, React saving state와 동기
+`useRef` lock을 유지한다. 유효 좌표가 없는 일정은 오류가 아니며 안내와 `위치 없이 저장할까요?`
+확인을 거쳐 저장할 수 있어야 한다. 기존 linked 일정의 장소 텍스트를 바꾸지 않은 경우 위치 연결을
+보존하는 정책과 `hasValidScheduleLocation` 판별을 재사용한다.
+
 ---
 
 ## 13. 방문 도장 방향
@@ -449,21 +472,32 @@ git push
 
 현재 구현된 기능:
 
-* 일정 장소 마커
-* 선택 날짜의 시간순 이동 순서
-* 좌표가 있는 일정에 맞춘 지도 영역 조정
+* 일정 장소 marker와 전체 시간순 일정 기준 번호
+* 선택 날짜의 시간순 이동 순서와 체류시간
+* Google Routes API 기반 인접 linked 일정 사이 WALK 거리·소요시간·Polyline
+* backend route memory cache와 in-flight 공유, frontend abort/stale request 보호
 * 좌표가 없는 일정의 목록 유지와 미등록 안내
+* 기기 로컬 오늘을 여행 범위에 clamp한 최초 날짜 선택과 같은 여행 내 사용자 선택 유지
 
 아직 구현되지 않은 기능:
 
-* 경로 선
-* 실제 이동시간과 거리
-* 경로 최적화
-* 도보/대중교통 routing
+* WALK 이외 이동수단 선택과 자동차·대중교통 routing
+* Route Matrix와 경로/일정 순서 최적화
 * 영업시간, 막차, 실시간 지연 반영
 
 지도 화면의 `오늘의 이동 순서`는 실제 오늘이 아니라 사용자가 선택한 날짜의
 일정을 시간순으로 보여주며, 최적화 결과가 아니다.
+
+route segment는 전체 시간순 일정의 **인접 pair**만 대상으로 한다. 중간에 unlinked 일정이 있으면
+해당 일정 앞뒤 구간을 계산하지 않고 다음 linked 일정으로 건너뛰어 연결하지 않는다. linked 상태가
+바뀌면 최신 schedule 데이터와 좌표 signature에서 marker와 route를 다시 파생한다. marker 번호는
+linked 일정끼리 재번호화하지 않는다.
+
+iOS `react-native-maps` native crash 방어 구조는 회귀시키지 않는다. `selectedDate`와
+`renderedMapDate` 분리, native 전환 직렬화/coalescing, 마지막 pending 날짜, map generation과
+`onMapReady` gate, stale callback 무시, route `AbortController`, 날짜+schedule signature snapshot
+일치 검사를 유지한다. Polyline에는 finite/range-valid한 2~2,000개 좌표만 전달하고 route geometry를
+`fitToCoordinates`에 섞지 않는다. viewport는 유효 marker 좌표만 사용한다.
 
 장소 저장 시 가능하면 다음 정보를 유지한다.
 
@@ -611,12 +645,14 @@ UI 수정 시 다음을 주의한다.
 
 별도 최신 요청이 없다면 다음 큰 개발 방향은 지도/동선 고도화다.
 
-1. 실제 장소 간 이동거리
-2. 실제 이동시간
-3. route polyline
-4. 이동수단 처리
-5. 경로 최적화
-6. 이후 필요하면 대중교통, 영업시간, 막차와 실시간 지연 고도화
+1. 완료된 WALK route milestone과 native 안정성 유지
+2. 이동수단 모델과 선택 UI 확장
+3. Google Routes TRANSIT 제약 검토 후 구현
+4. 비 transit 일정 순서 최적화 preview 구현
+5. 이후 transit·영업시간·막차·실시간 조건을 포함한 고급 최적화 검토
+
+최적화가 기존 schedule time을 직접 바꿀지 별도 `sortOrder`를 사용할지, 결과를 preview/apply하는
+UX는 아직 결정되지 않았다. 구현 전에 설계를 확정하고 DB schema나 일정 의미를 임의로 바꾸지 않는다.
 
 ---
 
