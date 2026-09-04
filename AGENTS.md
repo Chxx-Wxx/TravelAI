@@ -71,7 +71,8 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 * cors
 * Google Places API (New)
 * react-native-maps 1.27.2
-* Google Routes API (현재 WALK)
+* Google Routes API (WALK, 비일본 TRANSIT)
+* NAVITIME Route(totalnavi) via RapidAPI (일본 TRANSIT)
 * Open-Meteo Geocoding / Forecast API
 * Git
 * GitHub
@@ -134,16 +135,19 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 * 여행 API
 * 일정 API
 * 사용자 identity와 여행 멤버 API
-* Google Routes WALK 경로 API (`POST /routes/compute`)
+* Google Routes WALK와 provider별 TRANSIT 경로 API (`POST /routes/compute`)
 
 `DATABASE_URL`이 있으면 Neon PostgreSQL의 `trips`, `schedules`, `users`,
 `trip_members` 테이블을 사용한다. 환경변수가 없으면 개발 편의를 위해 동일 기능을
 in-memory 저장소로 fallback하며, 이 모드에서는 서버 재시작 시 데이터가 사라질 수 있다.
 
-route API는 `server/route-service.js`에서 입력과 좌표를 검증하고 Google Routes를 호출한다.
-route 결과는 24시간/최대 500개의 process memory cache와 같은 key의 in-flight Promise 공유를
-사용하며 DB에는 저장하지 않는다. cache key의 좌표는 소수점 5자리로 반올림되고 서버 재시작 시
-cache가 사라진다. API key는 기존 `GOOGLE_MAPS_API_KEY`만 서버에서 사용한다.
+route API는 `server/route-service.js`에서 입력과 좌표를 검증하고 provider 공통 응답을 만든다.
+WALK는 항상 Google Routes, 일본 TRANSIT은 NAVITIME Route(totalnavi), 비일본 TRANSIT은
+Google Routes를 사용한다. route 결과는 최대 500개의 process memory cache와 같은 key의
+in-flight Promise 공유를 사용하며 DB에는 저장하지 않는다. WALK TTL은 24시간, TRANSIT TTL은
+15분이다. cache key에는 mode, provider와 TRANSIT departureTime도 포함되고 서버 재시작 시
+cache가 사라진다. Google은 `GOOGLE_MAPS_API_KEY`, NAVITIME은 `NAVITIME_RAPIDAPI_KEY`와
+선택 값인 `NAVITIME_RAPIDAPI_HOST`를 서버에서만 사용한다.
 
 예산, 지출, 정산, 준비물은 서버 API나 DB에 저장하지 않고 현재 tripId별
 AsyncStorage에 저장한다. `expense`, `settlement`, `packing` 테이블이 있다고 가정하지 않는다.
@@ -227,6 +231,8 @@ EXPO_PUBLIC_API_URL=https://xxxxx.ngrok-free.dev/places/search
 
 ```env
 GOOGLE_MAPS_API_KEY=YOUR_KEY
+NAVITIME_RAPIDAPI_KEY=YOUR_KEY
+NAVITIME_RAPIDAPI_HOST=navitime-route-totalnavi.p.rapidapi.com
 DATABASE_URL=YOUR_NEON_CONNECTION_STRING
 ```
 
@@ -388,11 +394,7 @@ git push
 
 따라서 일반 일정 항목을 체크리스트처럼 다루지 않는다.
 
-향후 실제로 방문한 장소는 별도의:
-
-**방문 도장 / 방문 기록**
-
-기능으로 관리하는 방향을 고려한다.
+방문 도장/방문 기록 기능은 현재 계획에서 제외되어 있으므로 TODO로 다시 추가하지 않는다.
 
 일정 목록의 날짜 섹션 순서는 항상 여행 1일차부터 유지한다. 최초 진입 시에만 기기 로컬 오늘을
 여행 범위에 clamp한 날짜로 자동 scroll하고, 이후 사용자의 수동 scroll을 다시 덮어쓰지 않는다.
@@ -405,24 +407,10 @@ UTC `toISOString()` 날짜로 바꾸거나 지도와 다른 초기 날짜 정책
 
 ---
 
-## 13. 방문 도장 방향
+## 13. 계획 제외 사항
 
-향후 방문 도장 기능을 고려한다.
-
-목적:
-
-실제로 방문한 장소를 기록한다.
-
-활용 가능 항목:
-
-* 여행 종료 요약
-* 실제 방문 장소 수
-* 방문 식당 수
-* 많이 머문 지역
-* 추억 화면
-* 회고 화면
-
-방문 도장은 일정 완료 체크와 다른 개념이다.
+방문 도장/방문 기록은 현재 개발 계획에서 제외되어 있다. 사용자의 새 요청 없이 일정 완료
+체크나 방문 기록 기능을 추가하지 않는다.
 
 ---
 
@@ -468,46 +456,66 @@ UTC `toISOString()` 날짜로 바꾸거나 지도와 다른 초기 날짜 정책
 
 ## 16. 지도/동선 방향
 
-지도에서는 하루 이동 흐름을 한눈에 이해할 수 있어야 한다.
+지도에서는 하루 이동 흐름과 현재 일정 순서의 인접 구간별 추천 이동수단을 보여준다.
 
 현재 구현된 기능:
 
 * 일정 장소 marker와 전체 시간순 일정 기준 번호
 * 선택 날짜의 시간순 이동 순서와 체류시간
-* Google Routes API 기반 인접 linked 일정 사이 WALK 거리·소요시간·Polyline
-* backend route memory cache와 in-flight 공유, frontend abort/stale request 보호
+* WALK는 Google Routes, 일본 TRANSIT은 NAVITIME Route(totalnavi), 비일본 TRANSIT은 Google Routes
+* WALK 거리·시간, TRANSIT 시간과 양쪽 Polyline, TRANSIT 노선·환승·운임 표시
+* segment별 WALK/TRANSIT `loading | available | unavailable` availability
+* WALK no-route와 TRANSIT walk-only를 unusable로 처리하는 대칭 fallback
+* 시간·운임·환승·TRANSIT 내부 도보량을 비교하는 AUTO 기본 추천
+* 주요 도쿄·오사카 노선 한국어 display mapping과 NFKC 원문 fallback
+* backend cache/in-flight 공유와 frontend 후보 cache
 * 좌표가 없는 일정의 목록 유지와 미등록 안내
 * 기기 로컬 오늘을 여행 범위에 clamp한 최초 날짜 선택과 같은 여행 내 사용자 선택 유지
 
-아직 구현되지 않은 기능:
+canonical WALK 결과는 항상 Google Routes다. TRANSIT 결과에 실제 transit leg가 없으면 NAVITIME의
+도보 시간·거리를 WALK로 쓰지 않고 TRANSIT unavailable로 처리한다. 한 mode만 가능하면 자동
+선택하고 unavailable chip은 비활성화한다. 둘 다 가능할 때만 수동 변경할 수 있으며 사용자의
+직접 선택을 AUTO가 다시 덮어쓰지 않는다. 둘 다 불가능할 때만 공통 unavailable 상태를 표시한다.
 
-* WALK 이외 이동수단 선택과 자동차·대중교통 routing
-* Route Matrix와 경로/일정 순서 최적화
-* 영업시간, 막차, 실시간 지연 반영
+AUTO 점수의 1차 기준은 다음과 같다.
 
-지도 화면의 `오늘의 이동 순서`는 실제 오늘이 아니라 사용자가 선택한 날짜의
-일정을 시간순으로 보여주며, 최적화 결과가 아니다.
+* WALK = 총 도보시간
+* TRANSIT = 실제시간 + 탑승 기본 4분 + 환승당 5분 + 운임 60엔당 1분 + 내부도보 1km당 2분
+
+점수와 추천 이유는 UI에 노출하지 않는다. 상수는 `lib/route-recommendation.ts`에 두고 실제 사용
+사례를 바탕으로 조정한다. 이 AUTO는 **현재 일정 순서 안에서 segment의 이동수단을 선택**할 뿐,
+장소나 일정 순서를 재배열하는 Route 순서 최적화가 아니다.
 
 route segment는 전체 시간순 일정의 **인접 pair**만 대상으로 한다. 중간에 unlinked 일정이 있으면
 해당 일정 앞뒤 구간을 계산하지 않고 다음 linked 일정으로 건너뛰어 연결하지 않는다. linked 상태가
 바뀌면 최신 schedule 데이터와 좌표 signature에서 marker와 route를 다시 파생한다. marker 번호는
 linked 일정끼리 재번호화하지 않는다.
 
+segment별 `AbortController`, request version/signature, 사용자 선택 version과 stale response
+검사를 유지한다. AUTO resolution은 mode별 후보를 최대 한 번만 요청해 재귀 fallback loop를 막고,
+한 segment의 결과 변경이 다른 segment를 재로딩하거나 지우지 않게 한다.
+
 iOS `react-native-maps` native crash 방어 구조는 회귀시키지 않는다. `selectedDate`와
 `renderedMapDate` 분리, native 전환 직렬화/coalescing, 마지막 pending 날짜, map generation과
-`onMapReady` gate, stale callback 무시, route `AbortController`, 날짜+schedule signature snapshot
-일치 검사를 유지한다. Polyline에는 finite/range-valid한 2~2,000개 좌표만 전달하고 route geometry를
+`onMapReady` gate, stale callback 무시, 날짜+schedule signature snapshot 일치 검사를 유지한다.
+Polyline에는 finite/range-valid한 2~2,000개 좌표만 전달하고 route geometry를
 `fitToCoordinates`에 섞지 않는다. viewport는 유효 marker 좌표만 사용한다.
 
-장소 저장 시 가능하면 다음 정보를 유지한다.
+일본 노선명 localization은 원본 `transitSummary.lineNames`를 바꾸지 않고 표시 직전에만 적용한다.
+검증된 exact mapping이 없으면 억지로 번역하지 않고 NFKC 정규화 원문을 표시한다. 일반 도시철도는
+IC 운임, 신칸센 포함 경로는 `운임 약 N엔` 형식을 유지한다.
 
-* placeId
-* 장소명
-* 위도
-* 경도
-* 주소
+장소 저장 시 `placeId`, 장소명, 위도, 경도와 주소를 가능하면 유지하고 Places API에서 받은
+좌표나 placeId를 불필요하게 버리지 않는다.
 
-Places API에서 받은 좌표나 placeId를 불필요하게 버리지 않는다.
+향후 작업:
+
+* 일본 BUS 실제 경로 실데이터 검증
+* AUTO 추천 점수 실사용 기반 미세조정
+* trip countryCode/timezone 정식 모델
+* 복수 TRANSIT 후보 자체 최적화
+* Route/일정 순서 최적화 preview/apply
+* 영업시간, 막차, 실시간 지연 반영
 
 ---
 
@@ -597,25 +605,9 @@ AI를 단순 앱 로직으로 해결 가능한 모든 기능에 억지로 사용
 
 ## 21. 여행 종료 기능
 
-향후 여행이 끝났을 때:
-
-`여행 종료!`
-
-같은 흐름을 고려한다.
-
-여행 종료 후 보여줄 수 있는 정보 예:
-
-* 🇯🇵 도쿄 여행 완료
-* 여행 기간
-* 방문 장소 수
-* 총 지출
-* 가장 많이 머문 지역
-* 방문한 식당 수
-* 사진
-* 메모
-* 방문 도장 기반 통계
-
-최종 디자인은 아직 확정되지 않았다.
+여행 종료 기능은 아직 미구현이다. 향후 방향은 사용자가 회고문을 직접 작성하는 별도 기능이 아니라,
+이미 저장된 여행 기간·일정·지출·정산 등의 데이터를 이용해 자동 통계와 요약 리포트를 만드는 것이다.
+방문 도장이나 별도 방문 기록을 전제로 설계하지 않는다. 최종 통계 항목과 화면은 아직 확정되지 않았다.
 
 ---
 
@@ -640,16 +632,20 @@ UI 수정 시 다음을 주의한다.
 
 ## 23. 현재 우선순위
 
-과거 우선순위였던 홈 일정 개수, 홈 날씨 연동, 지출 금액 천 단위 쉼표는 구현되어 있다.
-고정된 다음 작업을 문서만 보고 시작하지 말고 사용자의 최신 요청과 현재 저장소 상태를 먼저 확인한다.
+과거 우선순위였던 홈 일정 개수, 홈 날씨, 지출 금액 표시, WALK/TRANSIT provider 연결과
+segment AUTO 추천은 구현되어 있다. 고정된 다음 작업을 문서만 보고 시작하지 말고 사용자의 최신
+요청과 현재 저장소 상태를 먼저 확인한다.
 
-별도 최신 요청이 없다면 다음 큰 개발 방향은 지도/동선 고도화다.
+현재 남은 주요 방향:
 
-1. 완료된 WALK route milestone과 native 안정성 유지
-2. 이동수단 모델과 선택 UI 확장
-3. Google Routes TRANSIT 제약 검토 후 구현
-4. 비 transit 일정 순서 최적화 preview 구현
-5. 이후 transit·영업시간·막차·실시간 조건을 포함한 고급 최적화 검토
+1. 일본 BUS 실데이터 검증과 AUTO 점수 실사용 기반 미세조정
+2. trip countryCode/timezone 정식 모델
+3. 복수 TRANSIT 후보 자체 최적화
+4. AUTO 이동수단 선택과 별개인 Route/일정 순서 최적화 preview/apply
+5. 실제 AI 연동
+6. 실초대·인증·멀티디바이스와 expense/settlement 서버 동기화
+7. multi-trip/history, 자동 여행 종료 통계 리포트와 offline/network robustness
+8. production backend·rate limit·quota·Cloud Run 및 EAS·TestFlight·최종 polish
 
 최적화가 기존 schedule time을 직접 바꿀지 별도 `sortOrder`를 사용할지, 결과를 preview/apply하는
 UX는 아직 결정되지 않았다. 구현 전에 설계를 확정하고 DB schema나 일정 의미를 임의로 바꾸지 않는다.

@@ -1,21 +1,46 @@
 const ROUTES_API_URL =
   "https://routes.googleapis.com/directions/v2:computeRoutes";
 
-const ROUTES_FIELD_MASK = [
+const {
+  TransitProviderError,
+  requestTransitRoute,
+  selectRouteProvider,
+} = require("./transit-service");
+
+const BASE_ROUTES_FIELD_MASK = [
   "routes.distanceMeters",
   "routes.duration",
   "routes.polyline.encodedPolyline",
+];
+
+const TRANSIT_ROUTES_FIELD_MASK = [
+  ...BASE_ROUTES_FIELD_MASK,
+  "routes.legs.steps.travelMode",
+  "routes.legs.steps.distanceMeters",
+  "routes.legs.steps.transitDetails.transitLine.vehicle.type",
 ].join(",");
+
+const WALK_ROUTES_FIELD_MASK =
+  BASE_ROUTES_FIELD_MASK.join(",");
 
 const SUPPORTED_TRAVEL_MODES = new Set([
   "WALK",
+  "TRANSIT",
 ]);
 
 const ROUTE_CACHE_TTL_MS =
   24 * 60 * 60 * 1000;
+const TRANSIT_ROUTE_CACHE_TTL_MS =
+  15 * 60 * 1000;
 const ROUTE_CACHE_MAX_ENTRIES = 500;
 const NEARBY_COORDINATE_METERS = 5;
 const EARTH_RADIUS_METERS = 6_371_000;
+const TRANSIT_PAST_WINDOW_MS =
+  7 * 24 * 60 * 60 * 1000;
+const TRANSIT_FUTURE_WINDOW_MS =
+  100 * 24 * 60 * 60 * 1000;
+const IS_DEVELOPMENT =
+  process.env.NODE_ENV !== "production";
 
 const routeCache = new Map();
 const routeRequestsInFlight = new Map();
@@ -24,13 +49,75 @@ class RouteServiceError extends Error {
   constructor(
     message,
     statusCode = 500,
-    upstreamStatus = null
+    upstreamStatus = null,
+    code = null
   ) {
     super(message);
     this.name = "RouteServiceError";
     this.statusCode = statusCode;
     this.upstreamStatus = upstreamStatus;
+    this.code = code;
   }
+}
+
+function normalizeDepartureTime(
+  value,
+  now = Date.now()
+) {
+  const rfc3339Pattern =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+  if (
+    typeof value !== "string" ||
+    !rfc3339Pattern.test(value.trim())
+  ) {
+    throw new RouteServiceError(
+      "대중교통 출발시간이 올바르지 않습니다.",
+      400,
+      null,
+      "TRANSIT_DEPARTURE_TIME_INVALID"
+    );
+  }
+
+  const departureTimeMs = Date.parse(value);
+
+  if (!Number.isFinite(departureTimeMs)) {
+    throw new RouteServiceError(
+      "대중교통 출발시간이 올바르지 않습니다.",
+      400,
+      null,
+      "TRANSIT_DEPARTURE_TIME_INVALID"
+    );
+  }
+
+  if (
+    departureTimeMs <
+    now - TRANSIT_PAST_WINDOW_MS
+  ) {
+    throw new RouteServiceError(
+      "이 날짜의 대중교통 경로는 조회 기간이 지났습니다.",
+      422,
+      null,
+      "TRANSIT_TIME_TOO_OLD"
+    );
+  }
+
+  if (
+    departureTimeMs >
+    now + TRANSIT_FUTURE_WINDOW_MS
+  ) {
+    throw new RouteServiceError(
+      "대중교통 경로는 여행일이 가까워지면 확인할 수 있습니다.",
+      422,
+      null,
+      "TRANSIT_TIME_TOO_FAR"
+    );
+  }
+
+  return new Date(
+    Math.floor(departureTimeMs / 60_000) *
+      60_000
+  ).toISOString();
 }
 
 function normalizeCoordinate(value, label) {
@@ -62,6 +149,9 @@ function normalizeCoordinate(value, label) {
 function normalizeRouteRequest(body) {
   const tripId = String(body?.tripId ?? "").trim();
   const date = String(body?.date ?? "").trim();
+  const country = String(body?.country ?? "")
+    .normalize("NFKC")
+    .trim();
   const travelMode = String(
     body?.travelMode ?? "WALK"
   )
@@ -110,9 +200,17 @@ function normalizeRouteRequest(body) {
     );
   }
 
+  const departureTime =
+    travelMode === "TRANSIT"
+      ? normalizeDepartureTime(
+          body?.departureTime
+        )
+      : undefined;
+
   return {
     tripId,
     date,
+    country,
     origin: normalizeCoordinate(
       body?.origin,
       "출발지"
@@ -122,6 +220,7 @@ function normalizeRouteRequest(body) {
       "도착지"
     ),
     travelMode,
+    departureTime,
   };
 }
 
@@ -214,7 +313,10 @@ function decodeEncodedPolyline(encodedPolyline) {
   return coordinates;
 }
 
-function createRouteCacheKey(routeRequest) {
+function createRouteCacheKey(
+  routeRequest,
+  provider = selectRouteProvider(routeRequest)
+) {
   const { origin, destination } = routeRequest;
 
   return [
@@ -225,6 +327,8 @@ function createRouteCacheKey(routeRequest) {
     destination.latitude.toFixed(5),
     destination.longitude.toFixed(5),
     routeRequest.travelMode,
+    provider,
+    routeRequest.departureTime ?? "static",
   ].join("|");
 }
 
@@ -243,7 +347,11 @@ function getCachedRoute(cacheKey) {
   return cached.route;
 }
 
-function storeCachedRoute(cacheKey, route) {
+function storeCachedRoute(
+  cacheKey,
+  route,
+  ttlMs = ROUTE_CACHE_TTL_MS
+) {
   if (
     routeCache.size >= ROUTE_CACHE_MAX_ENTRIES
   ) {
@@ -255,9 +363,15 @@ function storeCachedRoute(cacheKey, route) {
   }
 
   routeCache.set(cacheKey, {
-    expiresAt: Date.now() + ROUTE_CACHE_TTL_MS,
+    expiresAt: Date.now() + ttlMs,
     route,
   });
+}
+
+function getRouteCacheTtl(travelMode) {
+  return travelMode === "TRANSIT"
+    ? TRANSIT_ROUTE_CACHE_TTL_MS
+    : ROUTE_CACHE_TTL_MS;
 }
 
 function parseDurationSeconds(duration) {
@@ -275,38 +389,192 @@ function parseDurationSeconds(duration) {
   return Math.round(seconds);
 }
 
+function normalizeTransitVehicleType(value) {
+  switch (value) {
+    case "BUS":
+    case "INTERCITY_BUS":
+    case "SHARE_TAXI":
+    case "TROLLEYBUS":
+      return "BUS";
+    case "SUBWAY":
+      return "SUBWAY";
+    case "COMMUTER_TRAIN":
+    case "HEAVY_RAIL":
+    case "HIGH_SPEED_TRAIN":
+    case "LONG_DISTANCE_TRAIN":
+    case "METRO_RAIL":
+    case "MONORAIL":
+    case "RAIL":
+      return "TRAIN";
+    case "TRAM":
+      return "TRAM";
+    case "FERRY":
+      return "FERRY";
+    default:
+      return "OTHER";
+  }
+}
+
+function createTransitSummary(route) {
+  const steps = Array.isArray(route?.legs)
+    ? route.legs.flatMap((leg) =>
+        Array.isArray(leg?.steps)
+          ? leg.steps
+          : []
+      )
+    : [];
+  const transitSteps = steps.filter(
+    (step) =>
+      step?.travelMode === "TRANSIT" &&
+      step?.transitDetails
+  );
+  const walkDistanceMeters = steps
+    .filter((step) => step?.travelMode === "WALK")
+    .reduce(
+      (total, step) =>
+        total +
+        (Number.isFinite(step?.distanceMeters)
+          ? Math.max(0, step.distanceMeters)
+          : 0),
+      0
+    );
+  const vehicleTypes = [
+    ...new Set(
+      transitSteps.map((step) =>
+        normalizeTransitVehicleType(
+          step.transitDetails?.transitLine
+            ?.vehicle?.type
+        )
+      )
+    ),
+  ];
+
+  return {
+    vehicleTypes,
+    transitLegCount: transitSteps.length,
+    transferCount: Math.max(
+      0,
+      transitSteps.length - 1
+    ),
+    walkDistanceMeters: Math.round(walkDistanceMeters),
+  };
+}
+
+function getGoogleErrorDiagnostic(data) {
+  const error =
+    data && typeof data === "object"
+      ? data.error
+      : null;
+
+  return {
+    code:
+      typeof error?.status === "string"
+        ? error.status
+        : typeof error?.code === "number"
+          ? String(error.code)
+          : "unknown",
+    message:
+      typeof error?.message === "string"
+        ? error.message.replace(/\s+/g, " ").trim()
+        : "unknown",
+  };
+}
+
+function throwTransitRouteNotFound(
+  routeRequest,
+  upstreamStatus,
+  diagnosticMessage
+) {
+  if (IS_DEVELOPMENT) {
+    console.info(
+      `[Routes API] TRANSIT google no-route status=${upstreamStatus} code=NO_ROUTE message=${diagnosticMessage} departureTime=${Boolean(routeRequest.departureTime)}`
+    );
+  }
+
+  throw new RouteServiceError(
+    "해당 시간에 대중교통 경로가 없습니다.",
+    422,
+    upstreamStatus,
+    "TRANSIT_ROUTE_NOT_FOUND"
+  );
+}
+
+function throwWalkRouteNotFound(
+  upstreamStatus,
+  diagnosticMessage
+) {
+  if (IS_DEVELOPMENT) {
+    console.info(
+      `[Routes API] WALK google no-route status=${upstreamStatus} code=NO_ROUTE message=${diagnosticMessage}`
+    );
+  }
+
+  throw new RouteServiceError(
+    "도보 경로를 찾을 수 없습니다.",
+    422,
+    upstreamStatus,
+    "WALK_ROUTE_NOT_FOUND"
+  );
+}
+
 async function requestGoogleRoute(
   routeRequest,
   apiKey
 ) {
+  if (typeof apiKey !== "string" || !apiKey.trim()) {
+    throw new RouteServiceError(
+      "Google Maps API key가 설정되지 않았습니다.",
+      500,
+      null,
+      "ROUTE_PROVIDER_UNAVAILABLE"
+    );
+  }
+
   let response;
+  const fieldMask =
+    routeRequest.travelMode === "TRANSIT"
+      ? TRANSIT_ROUTES_FIELD_MASK
+      : WALK_ROUTES_FIELD_MASK;
+  const requestBody = {
+    origin: {
+      location: {
+        latLng: routeRequest.origin,
+      },
+    },
+    destination: {
+      location: {
+        latLng: routeRequest.destination,
+      },
+    },
+    travelMode: routeRequest.travelMode,
+    computeAlternativeRoutes: false,
+    polylineQuality: "OVERVIEW",
+    polylineEncoding: "ENCODED_POLYLINE",
+    languageCode: "ko",
+    units: "METRIC",
+    ...(routeRequest.travelMode === "TRANSIT"
+      ? {
+          departureTime:
+            routeRequest.departureTime,
+        }
+      : {}),
+  };
 
   try {
+    if (IS_DEVELOPMENT) {
+      console.info(
+        `[Routes API] mode=${routeRequest.travelMode} google=request`
+      );
+    }
+
     response = await fetch(ROUTES_API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": ROUTES_FIELD_MASK,
+        "X-Goog-FieldMask": fieldMask,
       },
-      body: JSON.stringify({
-        origin: {
-          location: {
-            latLng: routeRequest.origin,
-          },
-        },
-        destination: {
-          location: {
-            latLng: routeRequest.destination,
-          },
-        },
-        travelMode: routeRequest.travelMode,
-        computeAlternativeRoutes: false,
-        polylineQuality: "OVERVIEW",
-        polylineEncoding: "ENCODED_POLYLINE",
-        languageCode: "ko",
-        units: "METRIC",
-      }),
+      body: JSON.stringify(requestBody),
     });
   } catch {
     throw new RouteServiceError(
@@ -324,6 +592,18 @@ async function requestGoogleRoute(
   }
 
   if (!response.ok) {
+    if (
+      IS_DEVELOPMENT &&
+      routeRequest.travelMode === "TRANSIT"
+    ) {
+      const diagnostic =
+        getGoogleErrorDiagnostic(data);
+
+      console.error(
+        `[Routes API] TRANSIT google error status=${response.status} code=${diagnostic.code} message=${diagnostic.message} departureTime=${Boolean(routeRequest.departureTime)}`
+      );
+    }
+
     throw new RouteServiceError(
       "Google Routes 경로 계산에 실패했습니다.",
       502,
@@ -331,7 +611,26 @@ async function requestGoogleRoute(
     );
   }
 
-  const route = data?.routes?.[0];
+  const routes = Array.isArray(data?.routes)
+    ? data.routes
+    : [];
+  const route = routes[0];
+
+  if (!route) {
+    if (routeRequest.travelMode === "TRANSIT") {
+      throwTransitRouteNotFound(
+        routeRequest,
+        response.status,
+        "no routes returned"
+      );
+    }
+
+    throwWalkRouteNotFound(
+      response.status,
+      "no routes returned"
+    );
+  }
+
   const distanceMeters = route?.distanceMeters;
   const encodedPolyline =
     route?.polyline?.encodedPolyline;
@@ -343,9 +642,17 @@ async function requestGoogleRoute(
     typeof encodedPolyline !== "string" ||
     !encodedPolyline
   ) {
-    throw new RouteServiceError(
-      "Google Routes 경로 응답이 올바르지 않습니다.",
-      502
+    if (routeRequest.travelMode === "TRANSIT") {
+      throwTransitRouteNotFound(
+        routeRequest,
+        response.status,
+        "usable route fields missing"
+      );
+    }
+
+    throwWalkRouteNotFound(
+      response.status,
+      "usable route fields missing"
     );
   }
 
@@ -353,9 +660,17 @@ async function requestGoogleRoute(
     decodeEncodedPolyline(encodedPolyline);
 
   if (coordinates.length === 0) {
-    throw new RouteServiceError(
-      "Google Routes 경로 좌표가 없습니다.",
-      502
+    if (routeRequest.travelMode === "WALK") {
+      throwWalkRouteNotFound(
+        response.status,
+        "route coordinates missing"
+      );
+    }
+
+    throwTransitRouteNotFound(
+      routeRequest,
+      response.status,
+      "route coordinates missing"
     );
   }
 
@@ -366,18 +681,36 @@ async function requestGoogleRoute(
     ),
     coordinates,
     travelMode: routeRequest.travelMode,
+    ...(routeRequest.travelMode === "TRANSIT"
+      ? {
+          transitSummary:
+            createTransitSummary(route),
+        }
+      : {}),
   };
 }
 
 async function computeCachedRoute(
   routeRequest,
-  apiKey
+  providerConfig
 ) {
+  const config =
+    typeof providerConfig === "string"
+      ? { googleApiKey: providerConfig }
+      : providerConfig ?? {};
+  const provider = selectRouteProvider(routeRequest);
   const cacheKey =
-    createRouteCacheKey(routeRequest);
+    createRouteCacheKey(routeRequest, provider);
   const cachedRoute = getCachedRoute(cacheKey);
 
   if (cachedRoute) {
+    if (IS_DEVELOPMENT) {
+      console.info(
+        routeRequest.travelMode === "TRANSIT"
+          ? `[Transit] provider=${provider} cache=hit`
+          : `[Routes API] mode=${routeRequest.travelMode} cache=hit`
+      );
+    }
     return cachedRoute;
   }
 
@@ -385,6 +718,13 @@ async function computeCachedRoute(
     routeRequestsInFlight.get(cacheKey);
 
   if (inFlight) {
+    if (IS_DEVELOPMENT) {
+      console.info(
+        routeRequest.travelMode === "TRANSIT"
+          ? `[Transit] provider=${provider} cache=in-flight`
+          : `[Routes API] mode=${routeRequest.travelMode} cache=in-flight`
+      );
+    }
     return inFlight;
   }
 
@@ -396,6 +736,7 @@ async function computeCachedRoute(
       );
 
     if (
+      routeRequest.travelMode === "WALK" &&
       straightLineDistance <=
       NEARBY_COORDINATE_METERS
     ) {
@@ -414,16 +755,51 @@ async function computeCachedRoute(
         travelMode: routeRequest.travelMode,
       };
 
-      storeCachedRoute(cacheKey, route);
+      storeCachedRoute(
+        cacheKey,
+        route,
+        getRouteCacheTtl(
+          routeRequest.travelMode
+        )
+      );
       return route;
     }
 
-    const route = await requestGoogleRoute(
-      routeRequest,
-      apiKey
-    );
+    let route;
 
-    storeCachedRoute(cacheKey, route);
+    try {
+      route =
+        routeRequest.travelMode === "TRANSIT"
+          ? await requestTransitRoute(routeRequest, {
+              googleApiKey: config.googleApiKey,
+              navitimeApiKey: config.navitimeApiKey,
+              navitimeHost: config.navitimeHost,
+              requestGoogleRoute,
+            })
+          : await requestGoogleRoute(
+              routeRequest,
+              config.googleApiKey
+            );
+    } catch (error) {
+      if (error instanceof TransitProviderError) {
+        throw new RouteServiceError(
+          error.message,
+          error.statusCode,
+          error.upstreamStatus,
+          error.code
+        );
+      }
+
+      throw error;
+    }
+
+    storeCachedRoute(
+      cacheKey,
+      route,
+      getRouteCacheTtl(
+        routeRequest.travelMode
+      )
+    );
     return route;
   })();
 
@@ -437,12 +813,20 @@ async function computeCachedRoute(
 }
 
 module.exports = {
-  ROUTES_FIELD_MASK,
+  ROUTES_FIELD_MASK: WALK_ROUTES_FIELD_MASK,
+  TRANSIT_ROUTES_FIELD_MASK,
   ROUTE_CACHE_TTL_MS,
+  TRANSIT_ROUTE_CACHE_TTL_MS,
+  TRANSIT_FUTURE_WINDOW_MS,
+  TRANSIT_PAST_WINDOW_MS,
   RouteServiceError,
   calculateStraightLineDistance,
   computeCachedRoute,
+  createTransitSummary,
   createRouteCacheKey,
   decodeEncodedPolyline,
+  normalizeDepartureTime,
   normalizeRouteRequest,
+  normalizeTransitVehicleType,
+  requestGoogleRoute,
 };

@@ -2,7 +2,7 @@
 
 이 문서는 새 개발자가 현재 저장소의 구조와 구현 범위를 빠르게 파악하기 위한 현황 문서다.
 마지막 코드 대조일은 2026-09-05이며, 문서보다 현재 소스코드와 사용자의 최신 요청을 우선한다.
-이 대조는 `sdk57-upgrade` 브랜치의 현재 working tree를 기준으로 했다.
+이 대조는 `main` 브랜치의 현재 working tree를 기준으로 했다.
 
 ## 1. 프로젝트 목적
 
@@ -51,12 +51,14 @@ app/packing/index.tsx     준비물 체크리스트
 * `pg`를 통한 PostgreSQL 연결
 * `DATABASE_URL`이 있으면 PostgreSQL, 없으면 in-memory development fallback
 * Google Places API (New)의 Text Search를 프론트 대신 호출
+* Google Routes WALK와 provider별 TRANSIT 경로를 공통 응답으로 정규화
 * 지출·정산·준비물 API는 없음
 
 ### 외부 API
 
 * Google Places API (New): Express 서버 경유
-* Google Routes API: Express 서버의 `POST /routes/compute` 경유, 현재 WALK만 사용
+* Google Routes API: 모든 WALK와 일본 외 TRANSIT에 사용
+* NAVITIME Route(totalnavi): RapidAPI를 통해 일본 TRANSIT에 사용
 * Open-Meteo Geocoding/Forecast API: 앱에서 직접 호출
 * 실제 AI API: 연결되지 않음
 
@@ -101,6 +103,8 @@ EXPO_PUBLIC_API_URL=https://your-server-url.example
 
 ```env
 GOOGLE_MAPS_API_KEY=YOUR_KEY
+NAVITIME_RAPIDAPI_KEY=YOUR_KEY
+NAVITIME_RAPIDAPI_HOST=navitime-route-totalnavi.p.rapidapi.com
 DATABASE_URL=YOUR_NEON_CONNECTION_STRING
 PORT=4000
 ```
@@ -249,15 +253,18 @@ PostgreSQL 일정 생성은 foreign key로, in-memory 일정 생성은 배열 �
 차단한다. `GET /schedules`는 `tripId`가 없으면 전체 일정도 반환할 수 있지만 프론트는 현재
 여행 ID를 전달한다.
 
-`POST /routes/compute`는 `tripId`, 날짜, 출발·도착 좌표와 `WALK` mode를 검증한 뒤 서버의
-`GOOGLE_MAPS_API_KEY`로 Google Routes `computeRoutes`를 호출한다. 응답의 거리, 소요시간,
-encoded polyline을 검증·decode해 프론트용 좌표 배열로 정규화한다. 직선거리 5m 이내의 두 좌표는
-Google 호출 없이 직접 경로를 반환한다. route 결과는 DB에 저장하지 않는다.
+`POST /routes/compute`는 `tripId`, 날짜, 국가, 출발·도착 좌표, `WALK | TRANSIT` mode와 TRANSIT
+출발시간을 검증한다. provider abstraction은 WALK를 항상 Google Routes로 보내고, TRANSIT은
+여행 국가가 일본이면 NAVITIME Route(totalnavi), 그 외에는 Google Routes를 사용한다. 거리,
+소요시간, geometry와 TRANSIT 노선·환승·운임·내부 도보량을 공통 응답으로 정규화한다. Google
+encoded polyline과 NAVITIME geometry는 모두 유효 좌표 2~2,000개 범위로 방어한다. WALK의
+직선거리 5m 이내 좌표는 Google 호출 없이 직접 경로를 반환하며 route 결과는 DB에 저장하지 않는다.
 
-서버 route cache는 `tripId | date | 소수점 5자리로 반올림한 출발·도착 좌표 | mode` key를 쓰는
-프로세스 메모리 cache다. TTL은 24시간, 최대 500개이며 같은 key의 진행 중 요청은 Promise를
-공유한다. 서버 재시작 시 cache는 사라진다. 개발 console의 route 조회 로그와 실제 Google API
-호출 수는 같지 않을 수 있다.
+서버 route cache key에는 `tripId`, 날짜, 소수점 5자리로 반올림한 출발·도착 좌표, mode,
+provider와 TRANSIT departureTime이 포함된다. 프로세스 메모리 cache의 최대 크기는 500개이고
+WALK TTL은 24시간, TRANSIT TTL은 15분이다. 같은 key의 진행 중 요청은 Promise를 공유한다.
+서버 재시작 시 cache는 사라지며 개발 console의 route 조회 로그와 실제 upstream API 호출 수는
+같지 않을 수 있다.
 
 ## 7. 사용자 identity와 여행 멤버
 
@@ -427,9 +434,10 @@ Google 후보를 연결했을 때만 있는 선택 값이다.
 * 한 marker에는 확대, 여러 marker에는 marker 좌표만으로 `fitToCoordinates`
 * 좌표 없는 일정도 순서 목록에는 유지하고 `지도 위치 미등록` 표시
 * 선택 날짜의 일정 시간순 이동 목록과 체류시간 표시
-* Google Routes API 기반 인접 일정 사이 WALK 거리와 예상 소요시간
-* encoded polyline decode 결과를 `react-native-maps` `Polyline`으로 표시
-* 60분 이상 이동시간의 `N시간 M분` 표시
+* 모든 WALK는 Google Routes, 일본 TRANSIT은 NAVITIME Route(totalnavi), 비일본 TRANSIT은 Google Routes 사용
+* WALK 거리·예상시간, TRANSIT 예상시간과 양쪽 Polyline, TRANSIT 노선·환승·운임 표시
+* 도쿄·오사카 주요 노선명은 한국어 display mapping을 적용하고 미등록 노선은 NFKC 원문으로 표시
+* 일반 도시철도는 IC 운임, 신칸센 포함 경로는 `운임 약 N엔` 형식으로 표시
 * 일정 갱신 시 최신 linked/unlinked 상태와 좌표에서 marker와 route를 다시 파생
 
 현재 지도 initial region은 도쿄 좌표지만 일정 좌표가 있으면 해당 좌표들로 맞춘다. 화면의
@@ -442,13 +450,38 @@ Google 후보를 연결했을 때만 있는 선택 값이다.
 route는 linked 일정만 따로 압축해 연결하지 않고 **전체 시간순 일정의 인접 pair**로 만든다. 따라서
 `1 linked, 2 linked, 3 unlinked, 4 linked`이면 `1→2`만 계산하고 `2→4`로 건너뛰지 않는다.
 3번에 위치를 연결하면 최신 일정 기준으로 `1→2`, `2→3`, `3→4`가 자동 생성되고 다시 연결을
-제거하면 3번 marker와 관련 구간이 사라진다. marker 번호도 linked subset을 재번호화하지 않아
-처음에는 `1, 2, 4`, 연결 후에는 `1, 2, 3, 4`가 된다.
+제거하면 3번 marker와 관련 구간이 사라진다. marker 번호도 linked subset을 재번호화하지 않는다.
 
-각 route segment는 독립 요청하며 `Promise.allSettled`로 한 구간의 실패가 다른 marker·route를
-막지 않는다. 프론트는 request version, `AbortController`, 날짜와 schedule 좌표 signature가 든
-route snapshot으로 stale 응답을 무시한다. 서버 cache와 in-flight Promise 공유는 동일 요청의
-Google 호출량을 줄인다.
+### 이동수단 availability와 fallback
+
+각 segment는 WALK와 TRANSIT 각각 `loading | available | unavailable` availability를 가진다.
+`WALK_ROUTE_NOT_FOUND`는 WALK unavailable이고, TRANSIT 응답에 실제 transit leg가 없으면
+walk-only로 판단해 usable TRANSIT에서 제외한다. canonical WALK 거리·시간·geometry는 항상
+Google Routes 결과다.
+
+한 mode만 usable하면 해당 mode를 자동 선택하고 다른 chip은 흐리게 비활성화한다. WALK no-route와
+usable TRANSIT 조합은 TRANSIT으로, TRANSIT walk-only와 usable WALK 조합은 WALK로 전환한다.
+양쪽 모두 unavailable일 때만 `사용 가능한 이동 경로를 찾지 못했어요`를 표시한다. 한 resolution에서
+mode별 요청은 최대 한 번뿐이므로 WALK↔TRANSIT 재귀 fallback loop가 생기지 않는다.
+
+### WALK / TRANSIT AUTO 추천
+
+AUTO는 **현재 일정 순서의 각 인접 segment에서 이동수단을 고르는 기능**이며, 장소 방문 순서나
+schedule 순서를 재배열하는 경로 최적화와 별개다. frontend에 저장된 성공·unavailable 후보를 먼저
+복원하고 없는 후보만 조회한다. 둘 다 available이면 `lib/route-recommendation.ts`의 pure helper가
+다음 1차 점수를 비교해 낮은 쪽을 초기 선택한다.
+
+* WALK = 총 도보시간
+* TRANSIT = 실제시간 + 탑승 기본 4분 + 환승당 5분 + 운임 60엔당 1분 + 내부도보 1km당 2분
+
+점수와 추천 이유는 UI에 표시하지 않고 추천 결과에만 작은 별 표시를 사용한다. 두 mode가 모두
+available일 때만 사용자가 chip으로 바꿀 수 있으며, 같은 route identity에서 사용자가 직접 고른
+mode는 이후 AUTO 비동기 결과가 덮어쓰지 않는다. 점수 상수는 실제 사용 사례를 보고 조정할 예정이다.
+
+각 segment는 자체 `AbortController`, request version/signature와 사용자 선택 version을 사용한다.
+날짜·여행·일정 좌표·TRANSIT departureTime이 달라진 stale 응답은 버리고 다른 segment의 정상
+결과는 보존한다. frontend 후보 cache와 backend route cache/in-flight Promise 공유로 같은 후보를
+불필요하게 다시 호출하지 않는다.
 
 iOS Expo Go에서 Polyline이 있는 날짜와 없는 날짜를 빠르게 전환할 때 JS 오류 없이 종료되던 native
 MapView lifecycle 문제를 다음 invariant로 방어하며 실기기 일반·빠른 연속 전환을 검증했다.
@@ -457,21 +490,17 @@ MapView lifecycle 문제를 다음 invariant로 방어하며 실기기 일반·�
 * MapView 날짜 전환 직렬화와 빠른 연타 중 마지막 pending 날짜만 적용
 * map generation/version, instance key와 `onMapReady` gate로 stale callback 무시
 * 현재 map 날짜와 schedule signature가 모두 맞는 snapshot의 Polyline만 렌더
-* Polyline 좌표는 2~2,000개이며 모두 finite이고 위도 -90~90, 경도 -180~180일 때만 전달
+* Google/NAVITIME Polyline 좌표는 2~2,000개이며 모두 finite이고 위도 -90~90, 경도 -180~180일 때만 전달
 * route geometry는 viewport 계산에서 제외하고 marker 좌표만 사용
 
-다음은 미구현이다.
+지도·동선의 향후 작업:
 
-* WALK 이외 이동수단 선택과 자동차·대중교통 routing
-* Route Matrix
-* 자동 경로/일정 순서 최적화와 결과 preview/apply
-* 영업시간을 고려한 최적화
-* 막차·실시간 운행 지연 반영
-
-WALK milestone은 완료 상태로 보존한다. 다음 개발은 이동수단 데이터 모델/선택 확장 → Google
-Routes TRANSIT 검토·구현 → 비 transit 일정 순서 최적화 preview → transit·시간 제약을 포함한
-고급 최적화 순으로 진행한다. 최적화 결과를 기존 schedule time에 직접 쓰는지, 별도 sortOrder를
-두는지와 preview/apply UX는 아직 설계 결정이 필요하다.
+* 일본 BUS 경로의 실제 provider 데이터 검증
+* AUTO 점수의 실사용 기반 미세조정
+* trip의 정식 `countryCode`와 timezone 모델
+* 복수 TRANSIT 후보 사이의 자체 최적화
+* Route/일정 순서 최적화 preview/apply
+* 영업시간, 막차와 실시간 운행 지연 반영
 
 ## 12. 홈과 Open-Meteo 날씨
 
@@ -638,7 +667,9 @@ AI 하단 탭의 화면 자체는 구현되어 있다.
 * 일정 생성/수정의 하단 고정 저장 CTA와 unlinked 안내·저장 확인
 * Places autocomplete, linked/unlinked 저장, 확인 모달, dynamic 20km bias
 * 날짜별 일정 marker, 전체 일정 순번 유지와 시간순 이동 목록
-* Google Routes WALK 거리·시간·Polyline, 인접 일정 구간 정책과 route cache
+* Google WALK·비일본 Google TRANSIT·일본 NAVITIME TRANSIT provider 분기와 공통 route 응답
+* segment별 WALK/TRANSIT availability, 대칭 fallback, AUTO 추천과 수동 선택 우선권
+* TRANSIT Polyline·노선·환승·운임, 주요 일본 노선 한국어 표시와 NFKC 원문 fallback
 * MapView 날짜 전환 직렬화·stale snapshot 차단·좌표 검증 등 iOS native crash 방어
 * 다음 일정 좌표·시간 기반 Open-Meteo 예보와 도시 현재 날씨 fallback
 * 개인/공동 지출, 대여, 환율 snapshot, 최종 정산과 취소
@@ -651,25 +682,24 @@ AI 하단 탭의 화면 자체는 구현되어 있다.
 * 다인원 여행: 데이터 모델과 개발용 claim은 있으나 실제 초대·인증·공유 UX 없음
 * 여러 여행: 서버는 여러 여행을 저장·조회하지만 앱은 현재 여행 한 개만 사용
 * offline: 일부 로컬 데이터는 유지되지만 일정 offline cache와 재연결 동기화 없음
-* 지도/동선: WALK route는 완료됐으나 이동수단 선택·transit·최적화는 없음
+* 지도/동선: 이동수단 AUTO까지 완료됐으나 BUS 실데이터와 추천 점수는 추가 검증·조정 필요
 * 테마: navigation provider와 `userInterfaceStyle: automatic`은 있으나 주요 화면 색상이 light로 고정
 * AI: UI와 임시 키워드 응답만 존재
 
 ### 미구현
 
-* 실제 초대 링크, QR, 초대 token
-* 로그인·회원가입·OAuth·인증·서버 권한 검증
-* shared expense의 서버 동기화와 expense/settlement/packing DB persistence
-* WALK 이외 이동수단 선택, 자동차·대중교통 routing과 Route Matrix
-* 경로 최적화, 영업시간 고려, 막차·실시간 지연
+* 실제 초대 링크·QR·token, 로그인·인증·서버 권한 검증과 멀티디바이스 동기화
+* expense/settlement 서버 동기화와 관련 DB persistence
+* 일본 BUS 실제 경로 실데이터 검증과 AUTO 추천 점수 미세조정
+* trip countryCode/timezone 정식 모델과 복수 TRANSIT 후보 자체 최적화
+* Route/일정 순서 최적화 preview/apply, 영업시간 고려, 막차·실시간 지연
 * nearby discovery/recommendation
 * real AI API와 실제 일정 추천·재구성
-* Cloud Run production deployment 구성
-* 여러 여행 선택·수정·관리 UX
-* 앱 전체 offline 지원
-* 방문 스탬프/방문 기록
-* 여행 종료·회고·요약/리포트
-* 완전한 dark mode와 전체 UI polish
+* 여러 여행 선택·history UX
+* 기존 여행 데이터 기반 자동 종료 통계·요약 리포트
+* offline/network robustness
+* production backend, rate limit, quota와 Cloud Run 배포
+* EAS·TestFlight 배포와 완전한 dark mode를 포함한 최종 UI polish
 
 ## 18. 현재 코드에서 주의할 불일치와 한계
 
@@ -681,6 +711,7 @@ AI 하단 탭의 화면 자체는 구현되어 있다.
 * 일정 AsyncStorage helper는 있지만 실제 일정 화면의 offline read/write path에 연결되지 않는다.
 * 홈·일정·지출은 current-trip recovery를 사용하지만 지도·AI는 현재 로컬 snapshot을 직접 읽는다.
 * route cache는 backend 프로세스 메모리 전용이며 서버 재시작 시 사라지고 DB persistence는 없다.
+  WALK TTL은 24시간, TRANSIT TTL은 15분이고 frontend 후보 cache도 앱 프로세스 생명주기 안에서만 유지된다.
 * `GET /trips`는 구현되어 있어도 현재 프론트에는 여러 여행 선택/관리 화면이 없다.
 * app 설정은 시스템 테마를 허용하지만 대부분의 실제 화면 스타일은 라이트 색상 상수다.
 * 서버 package의 `test` script는 실제 테스트가 아니라 실패하는 placeholder이고, 저장소에 자동화된
@@ -689,7 +720,7 @@ AI 하단 탭의 화면 자체는 구현되어 있다.
 ## 19. 작업 원칙
 
 변경 전 관련 코드부터 확인한다. 특히 문서의 완료/TODO 목록만 보고 이미 구현된 기능을 다시 만들지
-않는다. 일정은 할 일 체크리스트로 바꾸지 않고, 실제 방문 여부는 향후 방문 기록 기능으로 분리한다.
+않는다. 일정은 할 일 체크리스트로 바꾸지 않는다. 방문 도장 기능은 현재 계획에서 제외되어 있다.
 비밀키를 커밋하지 않으며, 사용자가 요청하지 않으면 package·DB·인증·배포 범위를 확대하지 않는다.
 
 검사 명령:

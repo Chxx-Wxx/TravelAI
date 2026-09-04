@@ -25,6 +25,11 @@ import {
 } from "../../lib/schedule-location";
 
 import {
+  calculateScheduleEndTime,
+  calculateScheduleGapMinutes,
+} from "../../lib/schedule-time";
+
+import {
   getInitialTripDate,
   getTripCalendarDates,
 } from "../../lib/trip-date";
@@ -117,100 +122,6 @@ function formatDuration(
   }
 
   return `${hours}시간 ${remainingMinutes}분`;
-}
-
-function timeToMinutes(
-  time: string
-) {
-  const [
-    hour,
-    minute,
-  ] =
-    time
-      .split(":")
-      .map(Number);
-
-  return (
-    hour * 60 +
-    minute
-  );
-}
-
-function calculateEndTime(
-  startTime: string,
-  durationMinutes?: number
-) {
-  if (!durationMinutes) {
-    return null;
-  }
-
-  const start =
-    timeToMinutes(
-      startTime
-    );
-
-  const end =
-    start +
-    durationMinutes;
-
-  const endHour =
-    Math.floor(
-      end / 60
-    ) % 24;
-
-  const endMinute =
-    end % 60;
-
-  return `${String(
-    endHour
-  ).padStart(
-    2,
-    "0"
-  )}:${String(
-    endMinute
-  ).padStart(
-    2,
-    "0"
-  )}`;
-}
-
-function calculateGapMinutes(
-  current: Schedule,
-  next?: Schedule
-) {
-  if (
-    !next ||
-    !current.durationMinutes
-  ) {
-    return null;
-  }
-
-  const currentStart =
-    timeToMinutes(
-      current.time
-    );
-
-  const currentEnd =
-    currentStart +
-    current.durationMinutes;
-
-  let nextStart =
-    timeToMinutes(
-      next.time
-    );
-
-  if (
-    nextStart <
-    currentStart
-  ) {
-    nextStart +=
-      24 * 60;
-  }
-
-  return (
-    nextStart -
-    currentEnd
-  );
 }
 
 function formatGap(
@@ -678,7 +589,7 @@ export default function ScheduleScreen() {
                     index
                   ) => {
                     const endTime =
-                      calculateEndTime(
+                      calculateScheduleEndTime(
                         schedule.time,
                         schedule.durationMinutes
                       );
@@ -690,7 +601,7 @@ export default function ScheduleScreen() {
                       ];
 
                     const gapMinutes =
-                      calculateGapMinutes(
+                      calculateScheduleGapMinutes(
                         schedule,
                         nextSchedule
                       );

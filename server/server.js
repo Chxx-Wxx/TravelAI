@@ -326,25 +326,13 @@ app.post(
 );
 
 // ======================================================
-// Google Routes
+// Route providers
 // ======================================================
 
 app.post(
   "/routes/compute",
   async (req, res) => {
     try {
-      if (
-        !process.env
-          .GOOGLE_MAPS_API_KEY
-      ) {
-        return res
-          .status(500)
-          .json({
-            message:
-              "Google Maps API key가 설정되지 않았습니다.",
-          });
-      }
-
       const routeRequest =
         normalizeRouteRequest(
           req.body
@@ -353,8 +341,17 @@ app.post(
       const route =
         await computeCachedRoute(
           routeRequest,
-          process.env
-            .GOOGLE_MAPS_API_KEY
+          {
+            googleApiKey:
+              process.env
+                .GOOGLE_MAPS_API_KEY,
+            navitimeApiKey:
+              process.env
+                .NAVITIME_RAPIDAPI_KEY,
+            navitimeHost:
+              process.env
+                .NAVITIME_RAPIDAPI_HOST,
+          }
         );
 
       return res.json({
@@ -374,6 +371,8 @@ app.post(
             {
               message:
                 error.message,
+              code:
+                error.code,
               upstreamStatus:
                 error.upstreamStatus,
             }
@@ -386,10 +385,15 @@ app.post(
           )
           .json({
             message:
-              error.statusCode ===
-              400
+              error.statusCode <
+              500
                 ? error.message
                 : "경로 정보를 불러올 수 없습니다.",
+            ...(error.code
+              ? {
+                  code: error.code,
+                }
+              : {}),
           });
       }
 
