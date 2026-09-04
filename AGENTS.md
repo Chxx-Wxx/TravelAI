@@ -25,6 +25,7 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 
 작업할 때 다음 규칙을 지킨다.
 
+* 새 Codex 세션에서는 `PROJECT_CONTEXT.md`와 `AGENTS.md`를 먼저 읽고, 실제 작업 대상 코드를 다시 확인한다.
 * 수정 전에 관련 기존 파일을 먼저 읽는다.
 * 현재 프로젝트 구조를 최대한 유지한다.
 * 필요 없는 파일까지 수정하지 않는다.
@@ -60,13 +61,16 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 * Expo
 * TypeScript
 * Expo Router 기반 구조
+* AsyncStorage
+* expo-location
 * Node.js
 * Express
 * PostgreSQL (Neon)
 * dotenv
 * cors
 * Google Places API (New)
-* Google Maps 관련 기능
+* react-native-maps
+* Open-Meteo Geocoding / Forecast API
 * Git
 * GitHub
 
@@ -126,6 +130,14 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 `DATABASE_URL`이 있으면 Neon PostgreSQL의 `trips`, `schedules`, `users`,
 `trip_members` 테이블을 사용한다. 환경변수가 없으면 개발 편의를 위해 동일 기능을
 in-memory 저장소로 fallback하며, 이 모드에서는 서버 재시작 시 데이터가 사라질 수 있다.
+
+예산, 지출, 정산, 준비물은 서버 API나 DB에 저장하지 않고 현재 tripId별
+AsyncStorage에 저장한다. `expense`, `settlement`, `packing` 테이블이 있다고 가정하지 않는다.
+
+현재 여행 snapshot이 로컬에 있으나 서버 조회가 404이면 홈, 일정, 일정 생성/수정,
+지출 화면에서 서버 여행을 자동 복구할 수 있다. 네트워크 오류나 500에서는 복구하지 않으며,
+사라진 일정은 자동 복구하지 않는다. 같은 여행의 동시 복구는 single-flight로 합치고
+삭제 중인 여행을 되살리지 않는 보호 로직을 유지한다.
 
 사용자가 요청하지 않는 이상 임의로 DB 구조로 변경하지 않는다.
 
@@ -201,6 +213,7 @@ EXPO_PUBLIC_API_URL=https://xxxxx.ngrok-free.dev/places/search
 
 ```env
 GOOGLE_MAPS_API_KEY=YOUR_KEY
+DATABASE_URL=YOUR_NEON_CONNECTION_STRING
 ```
 
 실제 키는 절대 Git에 올리지 않는다.
@@ -209,24 +222,33 @@ GOOGLE_MAPS_API_KEY=YOUR_KEY
 
 ## 8. 개발 서버 실행 방식
 
-일반적인 개발 환경에서는 터미널 3개를 사용한다.
+기본 개발 환경은 집 Windows PC의 `C:\projects\TravelAI`이며, Git Bash에서는
+`cd /c/projects/TravelAI`를 사용한다. 일반적으로 터미널 3개를 사용할 수 있다.
 
 ### 터미널 1 - Express 서버
 
 ```bash
-cd server
-node server.js
+cd /c/projects/TravelAI/server
+npm start
 ```
 
-기본 포트:
+`npm start`는 `node server.js`와 동일하다. 기본 포트는 `4000`이며, PostgreSQL 개발 모드에서는
+다음 로그를 함께 확인한다.
 
-`4000`
+```text
+TravelAI storage: PostgreSQL
+TravelAI server running on port 4000
+```
+
+포트 로그만 확인하지 말고 `DATABASE_URL`이 적용된 PostgreSQL mode인지 확인한다.
 
 ### 터미널 2 - ngrok
 
 ```bash
 ngrok http 4000
 ```
+
+로컬 구성에 따라 `npx ngrok http 4000`을 사용할 수도 있다.
 
 ngrok에서 생성된 HTTPS 주소를 프론트 `.env`에 넣는다.
 
@@ -238,52 +260,41 @@ EXPO_PUBLIC_API_URL=https://xxxxx.ngrok-free.dev
 
 ### 터미널 3 - Expo
 
-학교에서는 네트워크 제한 때문에 일반 LAN 연결이 불안정할 수 있다.
-
-학교에서 우선 사용하는 명령:
-
-```bash
-npx expo start --tunnel
-```
-
-집에서는 일반적으로:
+먼저 다음 명령을 사용한다.
 
 ```bash
 npx expo start
 ```
 
-를 먼저 사용할 수 있다.
+집 네트워크에서 직접 연결되지 않을 때만:
+
+```bash
+npx expo start --tunnel
+```
 
 중요:
 
-* Expo tunnel = 아이폰과 Expo 개발 서버 연결
-* ngrok = 아이폰 앱과 Express 서버 4000 포트 연결
+* Expo tunnel = iPhone Expo Go와 Metro/Expo 개발 서버 연결
+* ngrok = React Native 앱과 Express 서버 4000 포트 연결
 
 둘은 역할이 다르다.
 
 ---
 
-## 9. 여러 PC에서 개발할 때
+## 9. 집 PC에서 개발 재개
 
-TravelAI는 집 PC와 학교 PC 등 여러 PC에서 개발한다.
+앞으로 기본 개발은 현재 집 PC 한 대에서 진행한다. 세션 시작 시:
 
-이미 저장소가 있는 PC에서 작업 시작 전:
+1. `cd /c/projects/TravelAI`
+2. `git status`
+3. `git pull origin main`
+4. lockfile 또는 의존성이 바뀌었으면 루트에서 `npm install`
+5. `server`에서도 별도로 `npm install`
+6. 루트 `.env`와 `server/.env` 확인
+7. backend, 필요 시 ngrok, Expo 순으로 실행
 
-```bash
-git pull
-```
-
-새 PC에서는:
-
-1. Git 설치
-2. Node.js 설치
-3. VS Code 설치
-4. 저장소 clone
-5. 루트에서 `npm install`
-6. 필요하면 `server`에서도 `npm install`
-7. `.env` 복구
-8. ngrok 설정
-9. Expo 및 서버 실행
+루트와 `server`는 각각 `package.json`을 사용한다. backend dependency는 `server` 폴더에서
+별도로 설치해야 하며, 루트 `npm install`만으로 `pg` 같은 서버 모듈이 보장되지 않는다.
 
 Git으로 자동 동기화되지 않는 항목:
 
@@ -292,9 +303,9 @@ Git으로 자동 동기화되지 않는 항목:
 * ngrok 인증 설정
 * 글로벌 설치 프로그램
 * VS Code 확장
-* PC별 네트워크 설정
+* 로컬 네트워크 설정
 
-새 라이브러리나 별도 설치 도구가 추가되면 다른 PC에서도 설치가 필요한지 사용자에게 반드시 알려준다.
+새 라이브러리나 별도 설치 도구가 추가되면 어느 폴더에서 설치해야 하는지 사용자에게 알려준다.
 
 ---
 
@@ -303,20 +314,24 @@ Git으로 자동 동기화되지 않는 항목:
 일반 작업 시작:
 
 ```bash
-git pull
+git status
+git pull origin main
 ```
 
-긴 개발 세션에서는 기능 단위로 안정된 시점에 중간 커밋을 권장한다.
+작업 중에는 실제 동작을 확인하고 변경 범위에 맞는 TypeScript, ESLint 등의 검사를 실행한다.
+테스트하지 않은 변경을 자동으로 commit/push하지 않는다.
 
 작업 종료 전:
 
 ```bash
+git status
 git add .
 git commit -m "작업 내용"
 git push
 ```
 
 사용자가 명확하게 요청하지 않는 이상 Codex가 임의로 `git commit` 또는 `git push`를 실행하지 않는다.
+긴 개발 세션에서는 사용자와 합의한 기능 단위의 안정된 시점에 중간 커밋을 권장할 수 있다.
 
 절대로 커밋하면 안 되는 것:
 
@@ -430,16 +445,25 @@ git push
 
 ## 16. 지도/동선 방향
 
-지도에서는 향후 하루 이동 흐름을 한눈에 이해할 수 있어야 한다.
+지도에서는 하루 이동 흐름을 한눈에 이해할 수 있어야 한다.
 
-목표 기능:
+현재 구현된 기능:
 
 * 일정 장소 마커
-* 이동 순서
+* 선택 날짜의 시간순 이동 순서
+* 좌표가 있는 일정에 맞춘 지도 영역 조정
+* 좌표가 없는 일정의 목록 유지와 미등록 안내
+
+아직 구현되지 않은 기능:
+
 * 경로 선
-* 하루 동선
+* 실제 이동시간과 거리
 * 경로 최적화
-* 일정 변경 반영
+* 도보/대중교통 routing
+* 영업시간, 막차, 실시간 지연 반영
+
+지도 화면의 `오늘의 이동 순서`는 실제 오늘이 아니라 사용자가 선택한 날짜의
+일정을 시간순으로 보여주며, 최적화 결과가 아니다.
 
 장소 저장 시 가능하면 다음 정보를 유지한다.
 
@@ -485,6 +509,17 @@ Places API에서 받은 좌표나 placeId를 불필요하게 버리지 않는다
 
 예산, 지출, 정산은 tripId별 AsyncStorage에 저장되며 아직 서버 DB에 동기화하지 않는다.
 
+memberId 기반 공동 지출은 결제자를 제외한 각 `participant → payer`, 대여는
+`borrower → lender`를 `ExpenseSettlementRelation`으로 계산한다. 실제 송금 완료는 별도
+`SettlementPayment`로 저장하며, 개별 대여 완료는 `source: "loan"`, 최종 정산은
+`source: "final"`을 사용한다. `resolvedRelations`로 어떤 원본 관계가 해소됐는지 연결하므로
+최종 정산과 개별 기록의 정산 상태는 독립적이지 않다.
+
+다인원 공동 지출은 relation 단위로 미정산/일부 정산/정산 완료를 표시한다.
+정산 완료를 취소하면 해당 payment가 해결한 relation만 다시 미정산으로 계산한다.
+이름 기반 legacy payment나 대여는 source/resolvedRelations가 없을 수 있으며 기존
+`loanSettled` 호환 경로를 유지한다.
+
 사용자가 요청하지 않은 기능까지 한 번에 구현하지 않는다.
 
 ---
@@ -503,6 +538,9 @@ AsyncStorage에 유지하고 placeholder member claim으로 개발 검증한다.
 ---
 
 ## 20. AI 기능 방향
+
+현재 AI 탭은 여행/일정 미리보기, 빠른 질문, 채팅 형태 UI까지 구현된 부분 구현 상태다.
+답변은 키워드별 고정 안내 문구이며 실제 AI API, 모델 호출, 일정 자동 변경은 구현되지 않았다.
 
 향후 AI 기능으로 고려하는 항목:
 
@@ -551,6 +589,9 @@ AI를 단순 앱 로직으로 해결 가능한 모든 기능에 억지로 사용
 
 향후 라이트/다크 테마 모두 지원하는 방향을 고려한다.
 
+현재 navigation theme provider와 시스템 자동 테마 설정은 있지만 주요 TravelAI 화면은
+라이트 색상을 직접 사용하므로 완전한 다크 모드는 미구현이다.
+
 UI 수정 시 다음을 주의한다.
 
 * TextInput 글자색
@@ -567,6 +608,15 @@ UI 수정 시 다음을 주의한다.
 
 과거 우선순위였던 홈 일정 개수, 홈 날씨 연동, 지출 금액 천 단위 쉼표는 구현되어 있다.
 고정된 다음 작업을 문서만 보고 시작하지 말고 사용자의 최신 요청과 현재 저장소 상태를 먼저 확인한다.
+
+별도 최신 요청이 없다면 다음 큰 개발 방향은 지도/동선 고도화다.
+
+1. 실제 장소 간 이동거리
+2. 실제 이동시간
+3. route polyline
+4. 이동수단 처리
+5. 경로 최적화
+6. 이후 필요하면 대중교통, 영업시간, 막차와 실시간 지연 고도화
 
 ---
 
