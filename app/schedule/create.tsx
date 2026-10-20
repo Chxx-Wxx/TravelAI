@@ -2,6 +2,7 @@ import DateTimePicker, {
   DateTimePickerEvent,
 } from "@react-native-community/datetimepicker";
 
+import * as Crypto from "expo-crypto";
 import { router } from "expo-router";
 
 import {
@@ -426,7 +427,7 @@ export default function CreateScheduleScreen() {
   ) {
     const newSchedule: Schedule = {
       id:
-        Date.now().toString(),
+        Crypto.randomUUID(),
 
       tripId,
 

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -49,6 +50,8 @@ const quickQuestions = [
 ];
 
 export default function AIScreen() {
+  const nextMessageIdRef = useRef(0);
+
   const [
     trip,
     setTrip,
@@ -206,10 +209,12 @@ export default function AIScreen() {
       return;
     }
 
+    const messageId = ++nextMessageIdRef.current;
+
     const userMessage:
       ChatMessage = {
         id:
-          `user-${Date.now()}`,
+          `user-${messageId}`,
 
         role:
           "user",
@@ -221,7 +226,7 @@ export default function AIScreen() {
     const assistantMessage:
       ChatMessage = {
         id:
-          `assistant-${Date.now()}`,
+          `assistant-${messageId}`,
 
         role:
           "assistant",
