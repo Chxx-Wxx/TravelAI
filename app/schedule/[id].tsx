@@ -676,7 +676,9 @@ export default function EditScheduleScreen() {
 
       Alert.alert(
         "수정 실패",
-        "일정을 수정하지 못했습니다."
+        error instanceof Error
+          ? error.message
+          : "일정을 수정하지 못했습니다."
       );
     }
   }
@@ -844,7 +846,14 @@ const tripStart =
     ) {
       Alert.alert(
         "여행 기간 확인",
-        `일정은 ${trip.startDate}부터 ${trip.endDate} 사이에만 설정할 수 있습니다.`
+        `일정은 ${trip.startDate}부터 ${trip.endDate} 사이에만 설정할 수 있습니다. 여행 수정 화면에서는 여행 기간과 기존 일정 날짜를 함께 변경할 수 있습니다.`,
+        [
+          { text: "취소", style: "cancel" },
+          {
+            text: "여행 기간 수정",
+            onPress: () => router.push("/trip/edit"),
+          },
+        ]
       );
 
       return;

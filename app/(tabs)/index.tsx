@@ -680,38 +680,59 @@ export default function HomeScreen() {
             👥 {trip.people}명
           </Text>
 
-          <Pressable
-            onPress={
-              handleDeleteTrip
-            }
+          <View
             style={{
               marginTop: 20,
-
-              backgroundColor:
-                "#FEECEC",
-
-              borderRadius: 12,
-
-              paddingVertical: 13,
-
-              alignItems:
-                "center",
+              flexDirection: "row",
+              gap: 10,
             }}
           >
-            <Text
+            <Pressable
+              onPress={() =>
+                router.push(
+                  "/trip/edit"
+                )
+              }
               style={{
-                color:
-                  "#DC2626",
-
-                fontSize: 16,
-
-                fontWeight:
-                  "bold",
+                flex: 1,
+                backgroundColor: "#E8F1FF",
+                borderRadius: 12,
+                paddingVertical: 13,
+                alignItems: "center",
               }}
             >
-              여행 삭제
-            </Text>
-          </Pressable>
+              <Text
+                style={{
+                  color: "#1D4ED8",
+                  fontSize: 16,
+                  fontWeight: "bold",
+                }}
+              >
+                여행 수정
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={handleDeleteTrip}
+              style={{
+                flex: 1,
+                backgroundColor: "#FEECEC",
+                borderRadius: 12,
+                paddingVertical: 13,
+                alignItems: "center",
+              }}
+            >
+              <Text
+                style={{
+                  color: "#DC2626",
+                  fontSize: 16,
+                  fontWeight: "bold",
+                }}
+              >
+                여행 삭제
+              </Text>
+            </Pressable>
+          </View>
         </View>
       )}
 

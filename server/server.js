@@ -3,7 +3,9 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const { randomUUID } = require("crypto");
 
-dotenv.config();
+if (process.env.NODE_ENV !== "test") {
+  dotenv.config();
+}
 
 const {
   hasDatabaseUrl,
@@ -16,6 +18,14 @@ const {
   computeCachedRoute,
   normalizeRouteRequest,
 } = require("./route-service");
+
+const {
+  TripUpdateValidationError,
+  applyTripMemberChanges,
+  normalizeScheduleDateUpdates,
+  normalizeTripUpdate,
+  validateScheduleDateWithinTrip,
+} = require("./trip-update-service");
 
 const app = express();
 
@@ -549,6 +559,28 @@ function toLegacyMembers(members) {
     id: member.id,
     name: member.displayName,
   }));
+}
+
+function createPlaceholderTripMember(tripId, displayName) {
+  const id = randomUUID();
+
+  return {
+    id,
+    tripId,
+    userId: null,
+    displayName,
+    role: "member",
+    status: "placeholder",
+    createdAt: new Date().toISOString(),
+    joinedAt: null,
+    legacyMemberId: id,
+  };
+}
+
+function toPublicTripMember(member) {
+  const { legacyMemberId, ...publicMember } = member;
+
+  return publicMember;
 }
 
 async function insertTripMembers(client, members) {
@@ -1242,88 +1274,294 @@ app.put("/trips/:id", async (req, res) => {
         });
       }
 
+      const currentTrip = trips[index];
+      const currentMembers = tripMembers.filter(
+        (member) => member.tripId === req.params.id
+      );
+      const activeMemberCount = currentMembers.filter(
+        (member) => member.status !== "removed"
+      ).length;
+      const update = normalizeTripUpdate(
+        req.body,
+        currentTrip,
+        activeMemberCount
+      );
+
+      const rawScheduleDateUpdates = Array.isArray(
+        req.body?.scheduleDateUpdates
+      )
+        ? req.body.scheduleDateUpdates
+        : [];
+      const currentSchedules = schedules.filter(
+        (schedule) => schedule.tripId === req.params.id
+      );
+      const scheduleUpdatePlan =
+        update.dateChanged || rawScheduleDateUpdates.length > 0
+          ? normalizeScheduleDateUpdates(
+              currentSchedules,
+              rawScheduleDateUpdates,
+              update.startDate,
+              update.endDate
+            )
+          : {
+              updates: [],
+              projectedSchedules: currentSchedules,
+            };
+
+      const memberChanges = applyTripMemberChanges(
+        currentMembers,
+        req.body?.memberChanges,
+        update.people,
+        (displayName) =>
+          createPlaceholderTripMember(
+            req.params.id,
+            displayName
+          )
+      );
+      const legacyMembers = toLegacyMembers(
+        memberChanges.activeMembers
+      );
+
+      tripMembers = [
+        ...tripMembers.filter(
+          (member) => member.tripId !== req.params.id
+        ),
+        ...memberChanges.members,
+      ];
+
+      const scheduleDateById = new Map(
+        scheduleUpdatePlan.updates.map((item) => [item.id, item.date])
+      );
+      schedules = schedules.map((schedule) => {
+        const updatedDate = scheduleDateById.get(schedule.id);
+
+        return updatedDate
+          ? { ...schedule, date: updatedDate }
+          : schedule;
+      });
+
       trips[index] = {
-        ...trips[index],
-        ...req.body,
-        id: trips[index].id,
+        ...currentTrip,
+        tripName: update.tripName,
+        country: update.country,
+        city: update.city,
+        startDate: update.startDate,
+        endDate: update.endDate,
+        people: String(memberChanges.activeMembers.length),
+        members: legacyMembers,
+        id: currentTrip.id,
       };
 
       return res.json({
         message: "여행이 수정되었습니다.",
-        trip: trips[index],
+        trip: {
+          ...trips[index],
+          tripMembers: memberChanges.members.map(
+            toPublicTripMember
+          ),
+        },
+        updatedSchedules: scheduleUpdatePlan.projectedSchedules.filter(
+          (schedule) => scheduleDateById.has(schedule.id)
+        ),
       });
     }
 
-    const fieldMap = [
-      ["tripName", "trip_name"],
-      ["country", "country"],
-      ["city", "city"],
-      ["startDate", "start_date"],
-      ["endDate", "end_date"],
-      ["people", "people"],
-      ["members", "members"],
-    ];
+    const client = await pool.connect();
 
-    const assignments = [];
-    const values = [];
+    try {
+      await client.query("BEGIN");
 
-    for (const [apiField, column] of fieldMap) {
-      if (!hasOwn(req.body, apiField)) {
-        continue;
-      }
-
-      let value = req.body[apiField];
-
-      if (apiField === "members") {
-        value = JSON.stringify(
-          Array.isArray(value) ? value : []
-        );
-      }
-
-      values.push(value);
-      assignments.push(
-        apiField === "members"
-          ? `${column} = $${values.length}::jsonb`
-          : `${column} = $${values.length}`
+      const tripResult = await client.query(
+        `
+          SELECT ${TRIP_COLUMNS}
+          FROM trips
+          WHERE id = $1
+          FOR UPDATE
+        `,
+        [req.params.id]
       );
-    }
 
-    values.push(req.params.id);
+      if (tripResult.rowCount === 0) {
+        await client.query("ROLLBACK");
 
-    const result = assignments.length > 0
-      ? await query(
+        return res.status(404).json({
+          message: "여행을 찾을 수 없습니다.",
+        });
+      }
+
+      const memberResult = await client.query(
+        `
+          SELECT ${TRIP_MEMBER_COLUMNS}
+          FROM trip_members
+          WHERE trip_id = $1
+          ORDER BY created_at ASC, id ASC
+          FOR UPDATE
+        `,
+        [req.params.id]
+      );
+      const currentTrip = toTrip(tripResult.rows[0]);
+      const currentMembers = memberResult.rows.map(toTripMember);
+      const update = normalizeTripUpdate(
+        req.body,
+        currentTrip,
+        currentMembers.filter(
+          (member) => member.status !== "removed"
+        ).length
+      );
+
+      const rawScheduleDateUpdates = Array.isArray(
+        req.body?.scheduleDateUpdates
+      )
+        ? req.body.scheduleDateUpdates
+        : [];
+      let scheduleUpdatePlan = {
+        updates: [],
+        projectedSchedules: [],
+      };
+
+      if (update.dateChanged || rawScheduleDateUpdates.length > 0) {
+        const scheduleResult = await client.query(
           `
-            UPDATE trips
-            SET ${assignments.join(", ")}
-            WHERE id = $${values.length}
-            RETURNING ${TRIP_COLUMNS}
-          `,
-          values
-        )
-      : await query(
-          `
-            SELECT ${TRIP_COLUMNS}
-            FROM trips
-            WHERE id = $1
+            SELECT ${SCHEDULE_COLUMNS}
+            FROM schedules
+            WHERE trip_id = $1
+            ORDER BY date ASC, time ASC, id ASC
+            FOR UPDATE
           `,
           [req.params.id]
         );
+        scheduleUpdatePlan = normalizeScheduleDateUpdates(
+          scheduleResult.rows.map(toSchedule),
+          rawScheduleDateUpdates,
+          update.startDate,
+          update.endDate
+        );
+      }
 
-    if (result.rowCount === 0) {
-      return res.status(404).json({
-        message: "여행을 찾을 수 없습니다.",
+      const memberChanges = applyTripMemberChanges(
+        currentMembers,
+        req.body?.memberChanges,
+        update.people,
+        (displayName) =>
+          createPlaceholderTripMember(
+            req.params.id,
+            displayName
+          )
+      );
+
+      for (const memberId of memberChanges.updatedIds) {
+        const member = memberChanges.members.find(
+          (item) => item.id === memberId
+        );
+
+        await client.query(
+          `
+            UPDATE trip_members
+            SET display_name = $1
+            WHERE id = $2 AND trip_id = $3
+          `,
+          [member.displayName, memberId, req.params.id]
+        );
+      }
+
+      for (const memberId of memberChanges.removeIds) {
+        await client.query(
+          `
+            UPDATE trip_members
+            SET status = 'removed'
+            WHERE id = $1 AND trip_id = $2
+          `,
+          [memberId, req.params.id]
+        );
+      }
+
+      await insertTripMembers(
+        client,
+        memberChanges.addedMembers
+      );
+
+      for (const scheduleUpdate of scheduleUpdatePlan.updates) {
+        await client.query(
+          `
+            UPDATE schedules
+            SET date = $1
+            WHERE id = $2 AND trip_id = $3
+          `,
+          [scheduleUpdate.date, scheduleUpdate.id, req.params.id]
+        );
+      }
+
+      const legacyMembers = toLegacyMembers(
+        memberChanges.activeMembers
+      );
+      const updatedResult = await client.query(
+        `
+          UPDATE trips
+          SET trip_name = $1,
+              country = $2,
+              city = $3,
+              start_date = $4,
+              end_date = $5,
+              people = $6,
+              members = $7::jsonb
+          WHERE id = $8
+          RETURNING ${TRIP_COLUMNS}
+        `,
+        [
+          update.tripName,
+          update.country,
+          update.city,
+          update.startDate,
+          update.endDate,
+          String(memberChanges.activeMembers.length),
+          JSON.stringify(legacyMembers),
+          req.params.id,
+        ]
+      );
+      const finalMemberResult = await client.query(
+        `
+          SELECT ${TRIP_MEMBER_COLUMNS}
+          FROM trip_members
+          WHERE trip_id = $1
+          ORDER BY created_at ASC, id ASC
+        `,
+        [req.params.id]
+      );
+
+      await client.query("COMMIT");
+
+      const updatedTrip = {
+        ...toTrip(updatedResult.rows[0]),
+        tripMembers: finalMemberResult.rows.map(toTripMember),
+      };
+
+      console.log("여행 수정 성공:", updatedTrip.id);
+
+      return res.json({
+        message: "여행이 수정되었습니다.",
+        trip: updatedTrip,
+        updatedSchedules: scheduleUpdatePlan.projectedSchedules.filter(
+          (schedule) =>
+            scheduleUpdatePlan.updates.some(
+              (updateItem) => updateItem.id === schedule.id
+            )
+        ),
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    if (error instanceof TripUpdateValidationError) {
+      return res.status(error.statusCode).json({
+        message: error.message,
+        code: error.code,
+        ...(error.details ?? {}),
       });
     }
 
-    const updatedTrip = toTrip(result.rows[0]);
-
-    console.log("여행 수정 성공:", updatedTrip);
-
-    return res.json({
-      message: "여행이 수정되었습니다.",
-      trip: updatedTrip,
-    });
-  } catch (error) {
     console.error("여행 수정 오류:", error);
 
     return res.status(500).json({
@@ -1440,51 +1678,90 @@ app.post("/schedules", async (req, res) => {
     };
 
     if (hasDatabaseUrl) {
-      const result = await query(
-        `
-          INSERT INTO schedules (
-            id, trip_id, title, location, address,
-            latitude, longitude, place_id, category,
-            duration_minutes, date, time, memo
-          )
-          VALUES (
-            $1, $2, $3, $4, $5,
-            $6, $7, $8, $9, $10,
-            $11, $12, $13
-          )
-          RETURNING ${SCHEDULE_COLUMNS}
-        `,
-        [
-          newSchedule.id,
-          newSchedule.tripId,
-          newSchedule.title,
-          newSchedule.location,
-          newSchedule.address,
-          newSchedule.latitude,
-          newSchedule.longitude,
-          newSchedule.placeId,
-          newSchedule.category,
-          newSchedule.durationMinutes,
-          newSchedule.date,
-          newSchedule.time,
-          newSchedule.memo,
-        ]
-      );
+      const client = await pool.connect();
 
-      Object.assign(
-        newSchedule,
-        toSchedule(result.rows[0])
-      );
+      try {
+        await client.query("BEGIN");
+
+        const tripResult = await client.query(
+          `
+            SELECT start_date, end_date
+            FROM trips
+            WHERE id = $1
+            FOR UPDATE
+          `,
+          [tripId]
+        );
+
+        if (tripResult.rowCount === 0) {
+          await client.query("ROLLBACK");
+
+          return res.status(404).json({
+            message: "해당 여행을 찾을 수 없습니다.",
+          });
+        }
+
+        newSchedule.date = validateScheduleDateWithinTrip(
+          newSchedule.date,
+          tripResult.rows[0].start_date,
+          tripResult.rows[0].end_date
+        );
+
+        const result = await client.query(
+          `
+            INSERT INTO schedules (
+              id, trip_id, title, location, address,
+              latitude, longitude, place_id, category,
+              duration_minutes, date, time, memo
+            )
+            VALUES (
+              $1, $2, $3, $4, $5,
+              $6, $7, $8, $9, $10,
+              $11, $12, $13
+            )
+            RETURNING ${SCHEDULE_COLUMNS}
+          `,
+          [
+            newSchedule.id,
+            newSchedule.tripId,
+            newSchedule.title,
+            newSchedule.location,
+            newSchedule.address,
+            newSchedule.latitude,
+            newSchedule.longitude,
+            newSchedule.placeId,
+            newSchedule.category,
+            newSchedule.durationMinutes,
+            newSchedule.date,
+            newSchedule.time,
+            newSchedule.memo,
+          ]
+        );
+
+        Object.assign(newSchedule, toSchedule(result.rows[0]));
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     } else {
-      const tripExists = trips.some(
+      const trip = trips.find(
         (trip) => trip.id === tripId
       );
 
-      if (!tripExists) {
+      if (!trip) {
         return res.status(404).json({
           message: "해당 여행을 찾을 수 없습니다.",
         });
       }
+
+      newSchedule.date = validateScheduleDateWithinTrip(
+        newSchedule.date,
+        trip.startDate,
+        trip.endDate
+      );
 
       schedules.push(newSchedule);
     }
@@ -1499,6 +1776,13 @@ app.post("/schedules", async (req, res) => {
       schedule: newSchedule,
     });
   } catch (error) {
+    if (error instanceof TripUpdateValidationError) {
+      return res.status(error.statusCode).json({
+        message: error.message,
+        code: error.code,
+      });
+    }
+
     if (error.code === "23503") {
       return res.status(404).json({
         message:
@@ -1620,11 +1904,32 @@ app.put("/schedules/:id", async (req, res) => {
         });
       }
 
+      const currentSchedule = schedules[index];
+      const trip = trips.find(
+        (item) => item.id === currentSchedule.tripId
+      );
+
+      if (!trip) {
+        return res.status(404).json({
+          message: "해당 여행을 찾을 수 없습니다.",
+        });
+      }
+
+      const nextDate = hasOwn(req.body, "date")
+        ? req.body.date
+        : currentSchedule.date;
+      validateScheduleDateWithinTrip(
+        nextDate,
+        trip.startDate,
+        trip.endDate
+      );
+
       schedules[index] = {
-        ...schedules[index],
+        ...currentSchedule,
         ...req.body,
-        id: schedules[index].id,
-        tripId: schedules[index].tripId,
+        date: String(nextDate).trim(),
+        id: currentSchedule.id,
+        tripId: currentSchedule.tripId,
       };
 
       return res.json({
@@ -1655,53 +1960,126 @@ app.put("/schedules/:id", async (req, res) => {
         continue;
       }
 
-      values.push(req.body[apiField]);
+      const value = apiField === "date"
+        ? String(req.body[apiField] ?? "").trim()
+        : req.body[apiField];
+
+      values.push(value);
       assignments.push(
         `${column} = $${values.length}`
       );
     }
 
-    values.push(req.params.id);
+    const client = await pool.connect();
 
-    const result = assignments.length > 0
-      ? await query(
-          `
-            UPDATE schedules
-            SET ${assignments.join(", ")}
-            WHERE id = $${values.length}
-            RETURNING ${SCHEDULE_COLUMNS}
-          `,
-          values
-        )
-      : await query(
-          `
-            SELECT ${SCHEDULE_COLUMNS}
-            FROM schedules
-            WHERE id = $1
-          `,
-          [req.params.id]
-        );
+    try {
+      await client.query("BEGIN");
 
-    if (result.rowCount === 0) {
-      return res.status(404).json({
-        message: "일정을 찾을 수 없습니다.",
+      const scheduleLookupResult = await client.query(
+        `
+          SELECT trip_id
+          FROM schedules
+          WHERE id = $1
+        `,
+        [req.params.id]
+      );
+
+      if (scheduleLookupResult.rowCount === 0) {
+        await client.query("ROLLBACK");
+
+        return res.status(404).json({
+          message: "일정을 찾을 수 없습니다.",
+        });
+      }
+
+      const tripId = scheduleLookupResult.rows[0].trip_id;
+      const tripResult = await client.query(
+        `
+          SELECT start_date, end_date
+          FROM trips
+          WHERE id = $1
+          FOR UPDATE
+        `,
+        [tripId]
+      );
+      const currentResult = await client.query(
+        `
+          SELECT date
+          FROM schedules
+          WHERE id = $1 AND trip_id = $2
+          FOR UPDATE
+        `,
+        [req.params.id, tripId]
+      );
+
+      if (
+        tripResult.rowCount === 0 ||
+        currentResult.rowCount === 0
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(404).json({
+          message: "일정 또는 여행을 찾을 수 없습니다.",
+        });
+      }
+
+      const currentSchedule = currentResult.rows[0];
+      const nextDate = hasOwn(req.body, "date")
+        ? req.body.date
+        : currentSchedule.date;
+      validateScheduleDateWithinTrip(
+        nextDate,
+        tripResult.rows[0].start_date,
+        tripResult.rows[0].end_date
+      );
+
+      values.push(req.params.id);
+
+      const result = assignments.length > 0
+        ? await client.query(
+            `
+              UPDATE schedules
+              SET ${assignments.join(", ")}
+              WHERE id = $${values.length}
+              RETURNING ${SCHEDULE_COLUMNS}
+            `,
+            values
+          )
+        : await client.query(
+            `
+              SELECT ${SCHEDULE_COLUMNS}
+              FROM schedules
+              WHERE id = $1
+            `,
+            [req.params.id]
+          );
+      const updatedSchedule = toSchedule(result.rows[0]);
+
+      await client.query("COMMIT");
+
+      console.log(
+        "일정 수정 성공:",
+        updatedSchedule.id
+      );
+
+      return res.json({
+        message: "일정이 수정되었습니다.",
+        schedule: updatedSchedule,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    if (error instanceof TripUpdateValidationError) {
+      return res.status(error.statusCode).json({
+        message: error.message,
+        code: error.code,
       });
     }
 
-    const updatedSchedule = toSchedule(
-      result.rows[0]
-    );
-
-    console.log(
-      "일정 수정 성공:",
-      updatedSchedule
-    );
-
-    return res.json({
-      message: "일정이 수정되었습니다.",
-      schedule: updatedSchedule,
-    });
-  } catch (error) {
     console.error("일정 수정 오류:", error);
 
     return res.status(500).json({
@@ -1774,7 +2152,7 @@ async function startServer() {
     await query("SELECT 1");
   }
 
-  app.listen(port, () => {
+  return app.listen(port, () => {
     console.log(
       hasDatabaseUrl
         ? "TravelAI storage: PostgreSQL"
@@ -1786,12 +2164,19 @@ async function startServer() {
   });
 }
 
-startServer().catch(async (error) => {
-  console.error(
-    "TravelAI server 시작 실패:",
-    error
-  );
+if (require.main === module) {
+  startServer().catch(async (error) => {
+    console.error(
+      "TravelAI server 시작 실패:",
+      error
+    );
 
-  await pool?.end().catch(() => {});
-  process.exitCode = 1;
-});
+    await pool?.end().catch(() => {});
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  app,
+  startServer,
+};

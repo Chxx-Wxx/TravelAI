@@ -64,6 +64,10 @@ import {
 } from "../../services/schedule";
 
 import {
+  getCityCoordinates,
+} from "../../services/weather";
+
+import {
   Schedule,
   Trip,
 } from "../../types";
@@ -515,6 +519,11 @@ export default function MapScreen() {
   const initializedTripIdRef =
     useRef<string | null>(null);
 
+  const [tripCenter, setTripCenter] = useState<
+    RouteCoordinate | null
+  >(null);
+  const tripCenterRequestVersionRef = useRef(0);
+
   const renderedMapDateRef =
     useRef<string | null>(null);
   const pendingMapDateRef =
@@ -614,6 +623,7 @@ export default function MapScreen() {
 
   useEffect(() => {
     return () => {
+      tripCenterRequestVersionRef.current += 1;
       abortAllRouteRequests();
     };
   }, [abortAllRouteRequests]);
@@ -629,6 +639,12 @@ export default function MapScreen() {
           setTrip(
             tripData
           );
+
+          const tripCenterRequestVersion =
+            tripCenterRequestVersionRef.current + 1;
+          tripCenterRequestVersionRef.current =
+            tripCenterRequestVersion;
+          setTripCenter(null);
 
           if (
             !tripData?.id
@@ -649,6 +665,32 @@ export default function MapScreen() {
 
             return;
           }
+
+          void getCityCoordinates(
+            tripData.city,
+            tripData.country
+          )
+            .then((location) => {
+              if (
+                tripCenterRequestVersionRef.current !==
+                tripCenterRequestVersion
+              ) {
+                return;
+              }
+
+              setTripCenter({
+                latitude: location.latitude,
+                longitude: location.longitude,
+              });
+            })
+            .catch(() => {
+              if (
+                tripCenterRequestVersionRef.current ===
+                tripCenterRequestVersion
+              ) {
+                setTripCenter(null);
+              }
+            });
 
           const tripChanged =
             initializedTripIdRef.current !== tripData.id;
@@ -1101,7 +1143,7 @@ export default function MapScreen() {
         coordinates.length ===
         0
       ) {
-        return;
+        return false;
       }
 
       if (
@@ -1127,7 +1169,7 @@ export default function MapScreen() {
           500
         );
 
-        return;
+        return true;
       }
 
       mapRef.current?.fitToCoordinates(
@@ -1142,6 +1184,22 @@ export default function MapScreen() {
 
           animated: true,
         }
+      );
+
+      return true;
+    },
+    []
+  );
+
+  const focusTripCenter = useCallback(
+    (coordinate: RouteCoordinate) => {
+      mapRef.current?.animateToRegion(
+        {
+          ...coordinate,
+          latitudeDelta: 0.15,
+          longitudeDelta: 0.15,
+        },
+        500
       );
     },
     []
@@ -1803,6 +1861,24 @@ export default function MapScreen() {
     renderedScheduleRouteSignature,
   ].join(":");
 
+  useEffect(() => {
+    if (
+      !tripCenter ||
+      readyMapInstanceKey !== mapInstanceKey ||
+      renderedMapSchedules.some(hasValidScheduleLocation)
+    ) {
+      return;
+    }
+
+    focusTripCenter(tripCenter);
+  }, [
+    focusTripCenter,
+    mapInstanceKey,
+    readyMapInstanceKey,
+    renderedMapSchedules,
+    tripCenter,
+  ]);
+
   const handleMapRef = useCallback(
     (instance: MapView | null) => {
       mapRef.current = instance;
@@ -1839,7 +1915,10 @@ export default function MapScreen() {
 
       mapReadyRef.current = true;
       setReadyMapInstanceKey(instanceKey);
-      focusSchedules(schedulesToFocus);
+
+      if (!focusSchedules(schedulesToFocus) && tripCenter) {
+        focusTripCenter(tripCenter);
+      }
 
       if (mapTransitionFrameRef.current !== null) {
         cancelAnimationFrame(mapTransitionFrameRef.current);
@@ -1871,7 +1950,12 @@ export default function MapScreen() {
         }
       );
     },
-    [beginMapTransition, focusSchedules]
+    [
+      beginMapTransition,
+      focusSchedules,
+      focusTripCenter,
+      tripCenter,
+    ]
   );
 
   useEffect(() => {
@@ -2083,9 +2167,11 @@ export default function MapScreen() {
             }}
             initialRegion={{
               latitude:
+                tripCenter?.latitude ??
                 35.6762,
 
               longitude:
+                tripCenter?.longitude ??
                 139.6503,
 
               latitudeDelta:

@@ -1,4 +1,5 @@
 import type {
+  Schedule,
   Trip,
   TripMember,
 } from "../types";
@@ -20,6 +21,49 @@ export type CreateTripInput = {
     name: string;
   }[];
 };
+
+export type TripMemberChanges = {
+  updates: {
+    id: string;
+    displayName: string;
+  }[];
+  additions: {
+    displayName: string;
+  }[];
+  removeIds: string[];
+};
+
+export type ScheduleDateUpdate = {
+  id: string;
+  previousDate: string;
+  date: string;
+};
+
+export type UpdateTripInput = Omit<
+  CreateTripInput,
+  "ownerUserId" | "members"
+> & {
+  memberChanges: TripMemberChanges;
+  scheduleDateUpdates: ScheduleDateUpdate[];
+};
+
+export class TripUpdateError extends Error {
+  code?: string;
+  schedules?: Pick<Schedule, "id" | "title" | "date">[];
+
+  constructor(
+    message: string,
+    details?: {
+      code?: string;
+      schedules?: Pick<Schedule, "id" | "title" | "date">[];
+    }
+  ) {
+    super(message);
+    this.name = "TripUpdateError";
+    this.code = details?.code;
+    this.schedules = details?.schedules;
+  }
+}
 
 export class TripNotFoundError extends Error {
   constructor(message = "여행을 찾을 수 없습니다.") {
@@ -296,8 +340,8 @@ export async function claimTripMember(
 // 여행 수정
 export async function updateServerTrip(
   id: string,
-  trip: CreateTripInput
-) {
+  trip: UpdateTripInput
+): Promise<Trip> {
   const apiUrl =
     requireApiUrl();
 
@@ -317,13 +361,28 @@ export async function updateServerTrip(
     }
   );
 
-  const data =
-    await response.json();
+  const contentType =
+    response.headers.get("content-type") ?? "";
+  const data = contentType
+    .toLowerCase()
+    .includes("application/json")
+    ? await response.json()
+    : null;
 
   if (!response.ok) {
-    throw new Error(
-      data.message ??
-        "여행 수정에 실패했습니다."
+    throw new TripUpdateError(
+      data?.message ??
+        `여행 수정에 실패했습니다. (HTTP ${response.status})`,
+      {
+        code: data?.code,
+        schedules: data?.schedules,
+      }
+    );
+  }
+
+  if (!data?.trip) {
+    throw new TripUpdateError(
+      "여행 수정 API가 올바른 응답을 반환하지 않았습니다."
     );
   }
 

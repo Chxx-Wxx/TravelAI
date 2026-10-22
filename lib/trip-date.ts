@@ -34,6 +34,55 @@ export function formatLocalCalendarDate(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+export function parseLocalCalendarDate(value: string) {
+  if (!isValidCalendarDate(value)) {
+    return null;
+  }
+
+  const [year, month, day] = value.split("-").map(Number);
+
+  return new Date(year, month - 1, day);
+}
+
+function getUtcCalendarTime(value: string) {
+  if (!isValidCalendarDate(value)) {
+    return null;
+  }
+
+  const [year, month, day] = value.split("-").map(Number);
+
+  return Date.UTC(year, month - 1, day);
+}
+
+export function getCalendarDayDifference(
+  fromDate: string,
+  toDate: string
+) {
+  const fromTime = getUtcCalendarTime(fromDate);
+  const toTime = getUtcCalendarTime(toDate);
+
+  if (fromTime === null || toTime === null) {
+    return null;
+  }
+
+  return Math.round((toTime - fromTime) / 86_400_000);
+}
+
+export function shiftCalendarDate(value: string, days: number) {
+  const time = getUtcCalendarTime(value);
+
+  if (time === null || !Number.isInteger(days)) {
+    return null;
+  }
+
+  const shifted = new Date(time + days * 86_400_000);
+  const year = shifted.getUTCFullYear();
+  const month = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(shifted.getUTCDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
 export function getInitialTripDate(
   trip: TripDateRange,
   today = new Date()
