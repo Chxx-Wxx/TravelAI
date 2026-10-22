@@ -1,4 +1,4 @@
-import {
+import type {
   ComputedRoute,
   RouteTravelMode,
 } from "../services/route";
@@ -8,6 +8,7 @@ export const ROUTE_RECOMMENDATION_WEIGHTS = {
   TRANSFER_MINUTES: 5,
   YEN_PER_EQUIVALENT_MINUTE: 60,
   TRANSIT_WALK_MINUTES_PER_KILOMETER: 2,
+  TRANSIT_MIN_SCORE_ADVANTAGE_MINUTES: 2,
 } as const;
 
 export type RouteRecommendation = {
@@ -55,7 +56,11 @@ export function recommendRouteMode(
 
   return {
     recommendedMode:
-      transitScore < walkScore ? "TRANSIT" : "WALK",
+      transitScore +
+          ROUTE_RECOMMENDATION_WEIGHTS.TRANSIT_MIN_SCORE_ADVANTAGE_MINUTES <
+        walkScore
+        ? "TRANSIT"
+        : "WALK",
     walkScore,
     transitScore,
     savedMinutes,

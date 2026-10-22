@@ -26,6 +26,22 @@ export type RouteCoordinate = {
   longitude: number;
 };
 
+export type TransitNode = {
+  id?: string;
+  name: string;
+};
+
+export type TransitLeg = {
+  vehicleType: TransitVehicleType;
+  lineId?: string;
+  lineName?: string;
+  operatorId?: string;
+  operatorName?: string;
+  fromStation?: TransitNode;
+  toStation?: TransitNode;
+  destination?: TransitNode;
+};
+
 export type ComputedRoute = {
   distanceMeters: number;
   durationSeconds: number;
@@ -36,8 +52,10 @@ export type ComputedRoute = {
     transitLegCount: number;
     transferCount: number;
     walkDistanceMeters?: number;
+    walkDurationSeconds?: number;
     hasShinkansen?: boolean;
     lineNames?: string[];
+    transitLegs?: TransitLeg[];
     fare?: {
       ticket?: number;
       ic?: number;
@@ -123,6 +141,57 @@ function isOptionalTransitFare(
   );
 }
 
+function isOptionalTransitNode(
+  value: unknown
+): value is TransitNode | undefined {
+  if (value === undefined) {
+    return true;
+  }
+
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const node = value as TransitNode;
+
+  return (
+    typeof node.name === "string" &&
+    node.name.length > 0 &&
+    (node.id === undefined ||
+      (typeof node.id === "string" && node.id.length > 0))
+  );
+}
+
+function isTransitLeg(value: unknown): value is TransitLeg {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const leg = value as TransitLeg;
+
+  return (
+    TRANSIT_VEHICLE_TYPES.some(
+      (supportedType) =>
+        supportedType === leg.vehicleType
+    ) &&
+    (leg.lineId === undefined ||
+      (typeof leg.lineId === "string" &&
+        leg.lineId.length > 0)) &&
+    (leg.lineName === undefined ||
+      (typeof leg.lineName === "string" &&
+        leg.lineName.length > 0)) &&
+    (leg.operatorId === undefined ||
+      (typeof leg.operatorId === "string" &&
+        leg.operatorId.length > 0)) &&
+    (leg.operatorName === undefined ||
+      (typeof leg.operatorName === "string" &&
+        leg.operatorName.length > 0)) &&
+    isOptionalTransitNode(leg.fromStation) &&
+    isOptionalTransitNode(leg.toStation) &&
+    isOptionalTransitNode(leg.destination)
+  );
+}
+
 function isRouteTravelMode(
   value: unknown
 ): value is RouteTravelMode {
@@ -160,6 +229,9 @@ function isTransitSummary(
     (summary.walkDistanceMeters === undefined ||
       (Number.isFinite(summary.walkDistanceMeters) &&
         summary.walkDistanceMeters >= 0)) &&
+    (summary.walkDurationSeconds === undefined ||
+      (Number.isFinite(summary.walkDurationSeconds) &&
+        summary.walkDurationSeconds >= 0)) &&
     (summary.hasShinkansen === undefined ||
       typeof summary.hasShinkansen === "boolean") &&
     (summary.lineNames === undefined ||
@@ -169,6 +241,9 @@ function isTransitSummary(
             typeof lineName === "string" &&
             lineName.length > 0
         ))) &&
+    (summary.transitLegs === undefined ||
+      (Array.isArray(summary.transitLegs) &&
+        summary.transitLegs.every(isTransitLeg))) &&
     isOptionalTransitFare(summary.fare)
   );
 }

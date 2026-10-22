@@ -2,6 +2,8 @@ import {
   useFocusEffect,
 } from "expo-router";
 
+import { Ionicons } from "@expo/vector-icons";
+
 import {
   useCallback,
   useEffect,
@@ -11,6 +13,7 @@ import {
 } from "react";
 
 import {
+  AppState,
   Pressable,
   ScrollView,
   Text,
@@ -21,6 +24,15 @@ import MapView, {
   Marker,
   Polyline,
 } from "react-native-maps";
+
+import {
+  LiveLocationMarker,
+} from "../../components/live-location-marker";
+
+import {
+  useLiveLocation,
+  type LiveUserLocation,
+} from "../../hooks/use-live-location";
 
 import {
   getTrip,
@@ -42,6 +54,9 @@ import {
 } from "../../lib/schedule-time";
 
 import {
+  getTransitLineDisplayName,
+  getTransitOperatorDisplayName,
+  getTransitStationDisplayName,
   localizeTransitLineName,
 } from "../../lib/transit-line-name";
 
@@ -55,6 +70,7 @@ import {
   RouteCoordinate,
   RouteRequestError,
   ROUTE_TRAVEL_MODES,
+  TransitLeg,
   RouteTravelMode,
   TransitVehicleType,
 } from "../../services/route";
@@ -137,6 +153,16 @@ type RouteModeBySegment = Record<
 type ScheduleMarker = {
   schedule: Schedule;
   displayOrder: number;
+};
+
+type LocationCameraMode = "free" | "following";
+
+type TransitLegDisplay = {
+  key: string;
+  lineName: string;
+  stationNames: string | null;
+  metadata: string | null;
+  originalNames: string | null;
 };
 
 const ROUTE_MODE_UI = {
@@ -439,6 +465,36 @@ export default function MapScreen() {
       null
     );
 
+  const [isLocationTrackingEnabled, setIsLocationTrackingEnabled] =
+    useState(false);
+
+  const {
+    location: liveLocation,
+    status: liveLocationStatus,
+    qualityIssue: liveLocationQualityIssue,
+    headingAnimation: liveHeadingAnimation,
+    headingAvailable: liveHeadingAvailable,
+    retry: retryLiveLocation,
+  } = useLiveLocation(isLocationTrackingEnabled);
+  const isLocationButtonActive =
+    isLocationTrackingEnabled &&
+    liveLocationStatus !== "denied" &&
+    liveLocationStatus !== "services-disabled" &&
+    liveLocationStatus !== "error";
+
+  const locationCameraModeRef =
+    useRef<LocationCameraMode>("free");
+  const liveLocationRef =
+    useRef<LiveUserLocation | null>(null);
+  const pendingLocationFocusRef = useRef(false);
+  const lastLocationCameraUpdateRef = useRef(0);
+  const locationFollowTimerRef = useRef<
+    ReturnType<typeof setTimeout> | null
+  >(null);
+  const lastFollowedLocationTimestampRef = useRef<
+    number | null
+  >(null);
+
   const [
     trip,
     setTrip,
@@ -538,6 +594,53 @@ export default function MapScreen() {
     );
   const activeMapInstanceKeyRef =
     useRef<string | null>(null);
+
+  const updateLocationCameraMode = useCallback(
+    (mode: LocationCameraMode) => {
+      locationCameraModeRef.current = mode;
+    },
+    []
+  );
+
+  const stopFollowingLocation = useCallback(() => {
+    if (locationFollowTimerRef.current !== null) {
+      clearTimeout(locationFollowTimerRef.current);
+      locationFollowTimerRef.current = null;
+    }
+    pendingLocationFocusRef.current = false;
+    lastFollowedLocationTimestampRef.current = null;
+    updateLocationCameraMode("free");
+  }, [updateLocationCameraMode]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener(
+      "change",
+      (nextState) => {
+        if (nextState === "background") {
+          setIsLocationTrackingEnabled(false);
+          stopFollowingLocation();
+        }
+      }
+    );
+
+    return () => {
+      subscription.remove();
+    };
+  }, [stopFollowingLocation]);
+
+  useEffect(() => {
+    liveLocationRef.current = liveLocation;
+  }, [liveLocation]);
+
+  useEffect(() => {
+    if (
+      liveLocationStatus === "denied" ||
+      liveLocationStatus === "services-disabled" ||
+      liveLocationStatus === "error"
+    ) {
+      stopFollowingLocation();
+    }
+  }, [liveLocationStatus, stopFollowingLocation]);
 
   const replaceRouteSnapshot = useCallback(
     (nextSnapshot: RouteSnapshot) => {
@@ -758,13 +861,26 @@ export default function MapScreen() {
           );
         }
       },
-      [requestMapDate, resetMapTransition]
+      [
+        requestMapDate,
+        resetMapTransition,
+      ]
     );
 
   useFocusEffect(
     useCallback(() => {
       loadData();
     }, [loadData])
+  );
+
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        setIsLocationTrackingEnabled(false);
+        stopFollowingLocation();
+      },
+      [stopFollowingLocation]
+    )
   );
 
   // 일정이 있는 날짜
@@ -1027,6 +1143,94 @@ export default function MapScreen() {
       : `${hours}시간 ${minutes}분`;
   }
 
+  function formatTransitLegs(
+    transitLegs: TransitLeg[]
+  ): TransitLegDisplay[] {
+    return transitLegs.map((leg, index) => {
+      const line = leg.lineName
+        ? getTransitLineDisplayName(
+            leg.lineName,
+            leg.lineId,
+            leg.operatorId
+          )
+        : null;
+      const fromStation = leg.fromStation
+        ? getTransitStationDisplayName(
+            leg.fromStation.name,
+            leg.fromStation.id
+          )
+        : null;
+      const toStation = leg.toStation
+        ? getTransitStationDisplayName(
+            leg.toStation.name,
+            leg.toStation.id
+          )
+        : null;
+      const destination = leg.destination
+        ? getTransitStationDisplayName(
+            leg.destination.name,
+            leg.destination.id
+          )
+        : null;
+      const operator = leg.operatorName
+        ? getTransitOperatorDisplayName(
+            leg.operatorName,
+            leg.operatorId
+          )
+        : null;
+      const vehicleName =
+        TRANSIT_VEHICLE_LABELS[leg.vehicleType];
+      const stationNames =
+        fromStation && toStation
+          ? `${fromStation.primaryName} → ${toStation.primaryName}`
+          : fromStation?.primaryName ??
+            toStation?.primaryName ??
+            null;
+      const metadata = [
+        destination
+          ? `${destination.primaryName} 방면`
+          : null,
+        operator?.primaryName ?? null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const originalStationNames =
+        fromStation?.originalName || toStation?.originalName
+          ? `${
+              fromStation?.originalName ??
+              fromStation?.primaryName ??
+              ""
+            } → ${
+              toStation?.originalName ??
+              toStation?.primaryName ??
+              ""
+            }`
+          : null;
+      const originalNames = [
+        line?.originalName ?? null,
+        originalStationNames,
+        destination?.originalName
+          ? `${destination.originalName}方面`
+          : null,
+        operator?.originalName ?? null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+
+      return {
+        key: `${leg.operatorId ?? "operator"}:${
+          leg.lineId ?? leg.lineName ?? "line"
+        }:${leg.fromStation?.id ?? "from"}:${
+          leg.toStation?.id ?? "to"
+        }:${index}`,
+        lineName: line?.primaryName ?? vehicleName,
+        stationNames,
+        metadata: metadata || null,
+        originalNames: originalNames || null,
+      };
+    });
+  }
+
   function formatTransitDetails(
     route: ComputedRoute
   ) {
@@ -1037,8 +1241,13 @@ export default function MapScreen() {
         isWalkOnly: false,
         transferLabel: null,
         detailLabel: null,
+        legDisplays: [] as TransitLegDisplay[],
       };
     }
+
+    const legDisplays = formatTransitLegs(
+      summary.transitLegs ?? []
+    );
 
     const localizedLineNames = [
       ...new Set(
@@ -1099,9 +1308,15 @@ export default function MapScreen() {
       transferLabel,
       detailLabel: isWalkOnly
         ? null
-        : [lineLabel || vehicleLabel, fareLabel]
+        : [
+            legDisplays.length === 0
+              ? lineLabel || vehicleLabel
+              : null,
+            fareLabel,
+          ]
             .filter(Boolean)
             .join(" · ") || null,
+      legDisplays,
     };
   }
 
@@ -1204,6 +1419,104 @@ export default function MapScreen() {
     },
     []
   );
+
+  const focusCurrentLocation = useCallback(
+    (
+      location: LiveUserLocation,
+      allowDuringMapTransition = false
+    ) => {
+      pendingLocationFocusRef.current = true;
+
+      if (
+        !mapRef.current ||
+        !mapReadyRef.current ||
+        (!allowDuringMapTransition &&
+          mapTransitionInFlightRef.current)
+      ) {
+        return false;
+      }
+
+      mapRef.current.animateCamera(
+        {
+          center: {
+            latitude: location.latitude,
+            longitude: location.longitude,
+          },
+        },
+        { duration: 260 }
+      );
+      pendingLocationFocusRef.current = false;
+      lastLocationCameraUpdateRef.current = Date.now();
+
+      return true;
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (
+      locationCameraModeRef.current !== "following" ||
+      !liveLocation ||
+      lastFollowedLocationTimestampRef.current ===
+        liveLocation.timestamp
+    ) {
+      return;
+    }
+
+    const elapsed =
+      Date.now() - lastLocationCameraUpdateRef.current;
+
+    if (elapsed < 400) {
+      pendingLocationFocusRef.current = true;
+      if (locationFollowTimerRef.current !== null) {
+        clearTimeout(locationFollowTimerRef.current);
+      }
+      locationFollowTimerRef.current = setTimeout(() => {
+        locationFollowTimerRef.current = null;
+        const pendingLocation = liveLocationRef.current;
+
+        if (
+          locationCameraModeRef.current === "following" &&
+          pendingLocation &&
+          lastFollowedLocationTimestampRef.current !==
+            pendingLocation.timestamp &&
+          focusCurrentLocation(pendingLocation)
+        ) {
+          lastFollowedLocationTimestampRef.current =
+            pendingLocation.timestamp;
+        }
+      }, 400 - elapsed);
+      return;
+    }
+
+    if (locationFollowTimerRef.current !== null) {
+      clearTimeout(locationFollowTimerRef.current);
+      locationFollowTimerRef.current = null;
+    }
+
+    if (focusCurrentLocation(liveLocation)) {
+      lastFollowedLocationTimestampRef.current =
+        liveLocation.timestamp;
+    }
+  }, [focusCurrentLocation, liveLocation]);
+
+  const handleMyLocationPress = useCallback(() => {
+    if (isLocationButtonActive) {
+      setIsLocationTrackingEnabled(false);
+      stopFollowingLocation();
+      return;
+    }
+
+    updateLocationCameraMode("following");
+    pendingLocationFocusRef.current = true;
+    retryLiveLocation();
+    setIsLocationTrackingEnabled(true);
+  }, [
+    isLocationButtonActive,
+    retryLiveLocation,
+    stopFollowingLocation,
+    updateLocationCameraMode,
+  ]);
 
   useEffect(() => {
     if (!trip?.id || !renderedMapDate) {
@@ -1769,6 +2082,7 @@ export default function MapScreen() {
   function handleSelectDate(
     date: string
   ) {
+    stopFollowingLocation();
     selectedDateRef.current = date;
     setSelectedDate(date);
     requestMapDate(date);
@@ -1865,6 +2179,7 @@ export default function MapScreen() {
     if (
       !tripCenter ||
       readyMapInstanceKey !== mapInstanceKey ||
+      locationCameraModeRef.current === "following" ||
       renderedMapSchedules.some(hasValidScheduleLocation)
     ) {
       return;
@@ -1905,7 +2220,6 @@ export default function MapScreen() {
       schedulesToFocus: Schedule[]
     ) => {
       if (
-        !date ||
         generation !== mapGenerationRef.current ||
         date !== renderedMapDateRef.current ||
         instanceKey !== activeMapInstanceKeyRef.current
@@ -1916,7 +2230,20 @@ export default function MapScreen() {
       mapReadyRef.current = true;
       setReadyMapInstanceKey(instanceKey);
 
-      if (!focusSchedules(schedulesToFocus) && tripCenter) {
+      const currentLocation = liveLocationRef.current;
+      const didFocusCurrentLocation =
+        locationCameraModeRef.current === "following" &&
+        currentLocation
+          ? focusCurrentLocation(currentLocation, true)
+          : false;
+
+      if (didFocusCurrentLocation && currentLocation) {
+        lastFollowedLocationTimestampRef.current =
+          currentLocation.timestamp;
+      } else if (
+        !focusSchedules(schedulesToFocus) &&
+        tripCenter
+      ) {
         focusTripCenter(tripCenter);
       }
 
@@ -1942,6 +2269,19 @@ export default function MapScreen() {
 
           if (!pendingDate || pendingDate === date) {
             pendingMapDateRef.current = null;
+
+            const pendingLocation = liveLocationRef.current;
+
+            if (
+              pendingLocationFocusRef.current &&
+              locationCameraModeRef.current === "following" &&
+              pendingLocation &&
+              focusCurrentLocation(pendingLocation)
+            ) {
+              lastFollowedLocationTimestampRef.current =
+                pendingLocation.timestamp;
+            }
+
             return;
           }
 
@@ -1952,6 +2292,7 @@ export default function MapScreen() {
     },
     [
       beginMapTransition,
+      focusCurrentLocation,
       focusSchedules,
       focusTripCenter,
       tripCenter,
@@ -1960,6 +2301,10 @@ export default function MapScreen() {
 
   useEffect(() => {
     return () => {
+      if (locationFollowTimerRef.current !== null) {
+        clearTimeout(locationFollowTimerRef.current);
+        locationFollowTimerRef.current = null;
+      }
       if (mapTransitionFrameRef.current !== null) {
         cancelAnimationFrame(mapTransitionFrameRef.current);
         mapTransitionFrameRef.current = null;
@@ -1973,6 +2318,35 @@ export default function MapScreen() {
           selectedDate
         )
       : null;
+
+  const canRenderLiveLocation =
+    liveLocation !== null &&
+    isValidRouteCoordinate({
+      latitude: liveLocation.latitude,
+      longitude: liveLocation.longitude,
+    });
+
+  const liveLocationMessage =
+    liveLocationStatus === "denied"
+      ? "위치 권한이 꺼져 있어요."
+      : liveLocationStatus === "services-disabled"
+        ? "iPhone 위치 서비스가 꺼져 있어요."
+        : liveLocationStatus === "error"
+          ? "현재 위치를 갱신할 수 없어요."
+          : liveLocationStatus === "requesting" &&
+              !canRenderLiveLocation
+            ? "현재 위치를 확인하고 있어요."
+            : liveLocationQualityIssue === "low-accuracy"
+              ? "GPS 정확도가 낮아 마지막 위치를 유지하고 있어요."
+              : liveLocationQualityIssue === "unstable"
+                ? "GPS 신호가 불안정해 마지막 위치를 유지하고 있어요."
+                : liveLocation?.accuracy !== null &&
+                    liveLocation?.accuracy !== undefined &&
+                    liveLocation.accuracy > 50
+                  ? `GPS 정확도 낮음 · 약 ${Math.round(
+                      liveLocation.accuracy
+                    )}m`
+                  : null;
 
   return (
     <View
@@ -2188,6 +2562,8 @@ export default function MapScreen() {
                 renderedMapSchedules
               );
             }}
+            onTouchStart={stopFollowingLocation}
+            onPanDrag={stopFollowingLocation}
           >
             {(readyMapInstanceKey === mapInstanceKey
               ? mapRouteSegments
@@ -2222,6 +2598,14 @@ export default function MapScreen() {
               );
             })}
 
+            {canRenderLiveLocation && liveLocation && (
+              <LiveLocationMarker
+                location={liveLocation}
+                headingAnimation={liveHeadingAnimation}
+                headingAvailable={liveHeadingAvailable}
+              />
+            )}
+
             {scheduleMarkers.map(
               ({ schedule, displayOrder }) => (
                 <Marker
@@ -2246,8 +2630,7 @@ export default function MapScreen() {
                       height: 36,
                       borderRadius: 18,
 
-                      backgroundColor:
-                        "#3B82F6",
+                      backgroundColor: "#3B82F6",
 
                       borderWidth: 3,
 
@@ -2276,6 +2659,109 @@ export default function MapScreen() {
               )
             )}
           </MapView>
+
+          {liveLocationMessage && (
+            <View
+              pointerEvents="none"
+              style={{
+                position: "absolute",
+                top: 12,
+                left: 12,
+                right: 68,
+                minHeight: 34,
+                justifyContent: "center",
+                backgroundColor: "rgba(255, 255, 255, 0.94)",
+                borderRadius: 8,
+                paddingHorizontal: 11,
+                paddingVertical: 7,
+                shadowColor: "#111827",
+                shadowOpacity: 0.12,
+                shadowRadius: 4,
+                shadowOffset: {
+                  width: 0,
+                  height: 2,
+                },
+                elevation: 3,
+              }}
+            >
+              <Text
+                style={{
+                  color: "#374151",
+                  fontSize: 12,
+                  fontWeight: "600",
+                }}
+              >
+                {liveLocationMessage}
+              </Text>
+            </View>
+          )}
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="내 위치"
+            accessibilityState={{
+              selected: isLocationButtonActive,
+              busy:
+                isLocationButtonActive &&
+                liveLocationStatus === "requesting",
+            }}
+            accessibilityValue={{
+              text: isLocationButtonActive ? "켜짐" : "꺼짐",
+            }}
+            accessibilityHint={
+              isLocationButtonActive
+                ? "현재 위치 추적을 종료합니다."
+                : "현재 위치를 표시하고 카메라 추적을 시작합니다."
+            }
+            onPress={handleMyLocationPress}
+            style={({ pressed }) => ({
+              position: "absolute",
+              right: 12,
+              bottom: 12,
+              minWidth: 88,
+              minHeight: 44,
+              borderRadius: 8,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
+              paddingHorizontal: 12,
+              backgroundColor:
+                isLocationButtonActive
+                  ? "#2563EB"
+                  : "rgba(255, 255, 255, 0.96)",
+              borderWidth: 1,
+              borderColor: isLocationButtonActive
+                ? "#1D4ED8"
+                : "#CBD5E1",
+              opacity: pressed ? 0.76 : 1,
+              shadowColor: "#111827",
+              shadowOpacity: 0.18,
+              shadowRadius: 5,
+              shadowOffset: {
+                width: 0,
+                height: 2,
+              },
+              elevation: 5,
+            })}
+          >
+            <Ionicons
+              name={isLocationButtonActive ? "navigate" : "locate"}
+              size={19}
+              color={isLocationButtonActive ? "#FFFFFF" : "#64748B"}
+            />
+            <Text
+              style={{
+                marginLeft: 5,
+                color: isLocationButtonActive
+                  ? "#FFFFFF"
+                  : "#475569",
+                fontSize: 12,
+                fontWeight: "bold",
+              }}
+            >
+              내 위치
+            </Text>
+          </Pressable>
         </View>
 
         {/* 좌표 없음 안내 */}
@@ -2396,6 +2882,7 @@ export default function MapScreen() {
                 null;
               let routeDetailLabel: string | null =
                 null;
+              let routeTransitLegs: TransitLegDisplay[] = [];
               let routeResultColor =
                 routeModeUi.color;
 
@@ -2440,6 +2927,8 @@ export default function MapScreen() {
                         .join(" · ");
                       routeDetailLabel =
                         transitDetails.detailLabel;
+                      routeTransitLegs =
+                        transitDetails.legDisplays;
                     }
                   } else {
                     routeLabel =
@@ -2506,6 +2995,7 @@ export default function MapScreen() {
                         return;
                       }
 
+                      stopFollowingLocation();
                       mapRef.current?.animateToRegion(
                         {
                           latitude:
@@ -2877,6 +3367,69 @@ export default function MapScreen() {
                               {routeDetailLabel}
                             </Text>
                           ) : null}
+
+                          {routeTransitLegs.map((leg) => (
+                            <View
+                              key={leg.key}
+                              style={{
+                                marginTop: 6,
+                                borderLeftWidth: 2,
+                                borderLeftColor: "#C4B5FD",
+                                paddingLeft: 8,
+                              }}
+                            >
+                              <Text
+                                style={{
+                                  color: "#312E81",
+                                  fontSize: 13,
+                                  lineHeight: 19,
+                                  fontWeight: "bold",
+                                }}
+                              >
+                                {leg.lineName}
+                              </Text>
+
+                              {leg.stationNames ? (
+                                <Text
+                                  style={{
+                                    marginTop: 1,
+                                    color: "#374151",
+                                    fontSize: 12,
+                                    lineHeight: 18,
+                                    fontWeight: "600",
+                                  }}
+                                >
+                                  {leg.stationNames}
+                                </Text>
+                              ) : null}
+
+                              {leg.metadata ? (
+                                <Text
+                                  style={{
+                                    marginTop: 1,
+                                    color: "#6B7280",
+                                    fontSize: 11,
+                                    lineHeight: 17,
+                                  }}
+                                >
+                                  {leg.metadata}
+                                </Text>
+                              ) : null}
+
+                              {leg.originalNames ? (
+                                <Text
+                                  style={{
+                                    marginTop: 2,
+                                    color: "#9CA3AF",
+                                    fontSize: 10,
+                                    lineHeight: 15,
+                                  }}
+                                >
+                                  {leg.originalNames}
+                                </Text>
+                              ) : null}
+                            </View>
+                          ))}
                         </View>
                       </View>
                     </View>

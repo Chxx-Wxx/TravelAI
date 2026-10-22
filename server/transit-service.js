@@ -1,6 +1,7 @@
 const NAVITIME_ROUTE_PATH = "/route_transit";
 const DEFAULT_NAVITIME_RAPIDAPI_HOST =
   "navitime-route-totalnavi.p.rapidapi.com";
+const NAVITIME_ROUTE_LIMIT = 5;
 const MAX_ROUTE_COORDINATES = 2000;
 const IS_DEVELOPMENT =
   process.env.NODE_ENV !== "production";
@@ -25,6 +26,12 @@ const NAVITIME_BUS_TYPES = new Set([
   "highway_bus",
   "local_bus",
 ]);
+
+const NAVITIME_CANDIDATE_WEIGHTS = {
+  TRANSFER_MINUTES: 5,
+  YEN_PER_EQUIVALENT_MINUTE: 60,
+  WALK_MINUTES_PER_KILOMETER: 2,
+};
 
 class TransitProviderError extends Error {
   constructor(
@@ -188,9 +195,107 @@ function getTransitSections(item) {
     : [];
 }
 
+function normalizeOptionalString(value) {
+  return typeof value === "string" && value.trim()
+    ? value.normalize("NFKC").trim()
+    : null;
+}
+
+function createNavitimeNode(value) {
+  const name = normalizeOptionalString(value?.name);
+
+  if (!name || name === "start" || name === "goal") {
+    return null;
+  }
+
+  const id = normalizeOptionalString(
+    value?.id ?? value?.node_id
+  );
+
+  return {
+    ...(id ? { id } : {}),
+    name,
+  };
+}
+
+function getNavitimeTransportLink(section) {
+  const links = Array.isArray(section?.transport?.links)
+    ? section.transport.links
+    : [];
+
+  return (
+    links.find(
+      (link) =>
+        link &&
+        typeof link === "object" &&
+        normalizeOptionalString(link.name)
+    ) ?? null
+  );
+}
+
+function createNavitimeTransitLegs(item) {
+  const sections = Array.isArray(item?.sections)
+    ? item.sections
+    : [];
+  const legs = [];
+
+  sections.forEach((section, index) => {
+    if (
+      section?.type !== "move" ||
+      section?.move === "walk"
+    ) {
+      return;
+    }
+
+    const link = getNavitimeTransportLink(section);
+    const previousPoint = sections
+      .slice(0, index)
+      .reverse()
+      .find((candidate) => candidate?.type === "point");
+    const nextPoint = sections
+      .slice(index + 1)
+      .find((candidate) => candidate?.type === "point");
+    const fromStation = createNavitimeNode(
+      link?.from ?? previousPoint
+    );
+    const toStation = createNavitimeNode(
+      link?.to ?? nextPoint
+    );
+    const destination = createNavitimeNode(
+      link?.destination
+    );
+    const lineId = normalizeOptionalString(link?.id);
+    const lineName =
+      normalizeOptionalString(link?.name) ??
+      normalizeOptionalString(section.line_name) ??
+      normalizeOptionalString(section.transport?.name);
+    const operatorId = normalizeOptionalString(
+      section.transport?.company?.id
+    );
+    const operatorName = normalizeOptionalString(
+      section.transport?.company?.name
+    );
+
+    legs.push({
+      vehicleType:
+        normalizeNavitimeVehicleType(section.move) ?? "OTHER",
+      ...(lineId ? { lineId } : {}),
+      ...(lineName ? { lineName } : {}),
+      ...(operatorId ? { operatorId } : {}),
+      ...(operatorName ? { operatorName } : {}),
+      ...(fromStation ? { fromStation } : {}),
+      ...(toStation ? { toStation } : {}),
+      ...(destination ? { destination } : {}),
+    });
+  });
+
+  return legs;
+}
+
 function createNavitimeTransitSummary(item) {
   const moveSummary = item.summary.move;
   const transitSections = getTransitSections(item);
+  const transitLegs = createNavitimeTransitLegs(item);
   const summaryMoveTypes = Array.isArray(
     moveSummary.move_type
   )
@@ -211,15 +316,8 @@ function createNavitimeTransitSummary(item) {
   ];
   const lineNames = [
     ...new Set(
-      transitSections
-        .map((section) => {
-          const lineName =
-            typeof section.line_name === "string"
-              ? section.line_name.trim()
-              : "";
-
-          return lineName || section.transport?.name;
-        })
+      transitLegs
+        .map((leg) => leg.lineName)
         .filter(
           (lineName) =>
             typeof lineName === "string" &&
@@ -247,6 +345,22 @@ function createNavitimeTransitSummary(item) {
           : 0),
       0
     );
+  const walkDurationSeconds = (
+    Array.isArray(item.sections) ? item.sections : []
+  )
+    .filter(
+      (section) =>
+        section?.type === "move" &&
+        section?.move === "walk"
+    )
+    .reduce(
+      (total, section) =>
+        total +
+        (isFiniteNumber(section.time)
+          ? Math.max(0, section.time) * 60
+          : 0),
+      0
+    );
   const referenceFare = moveSummary.reference_fare;
   const hasShinkansen = transitSections.some(
     (section) => section.move === "superexpress_train"
@@ -257,16 +371,26 @@ function createNavitimeTransitSummary(item) {
   const ic = toNonNegativeInteger(
     referenceFare?.lowest_total_ic
   );
+  const maximumTransferCount = Math.max(
+    0,
+    transitSections.length - 1
+  );
 
   return {
     vehicleTypes,
     transitLegCount: transitSections.length,
     transferCount:
-      reportedTransferCount ??
-      Math.max(0, transitSections.length - 1),
+      reportedTransferCount === null
+        ? maximumTransferCount
+        : Math.min(
+            reportedTransferCount,
+            maximumTransferCount
+          ),
     walkDistanceMeters: Math.round(walkDistanceMeters),
+    walkDurationSeconds: Math.round(walkDurationSeconds),
     hasShinkansen,
     ...(lineNames.length > 0 ? { lineNames } : {}),
+    ...(transitLegs.length > 0 ? { transitLegs } : {}),
     ...(ticket !== null || ic !== null
       ? {
           fare: {
@@ -277,6 +401,24 @@ function createNavitimeTransitSummary(item) {
         }
       : {}),
   };
+}
+
+function getNavitimeCandidateScore(item, transitSummary) {
+  const moveSummary = item.summary.move;
+  const fare =
+    transitSummary.fare?.ic ??
+    transitSummary.fare?.ticket ??
+    0;
+
+  return (
+    moveSummary.time +
+    transitSummary.transferCount *
+      NAVITIME_CANDIDATE_WEIGHTS.TRANSFER_MINUTES +
+    fare /
+      NAVITIME_CANDIDATE_WEIGHTS.YEN_PER_EQUIVALENT_MINUTE +
+    (transitSummary.walkDistanceMeters / 1000) *
+      NAVITIME_CANDIDATE_WEIGHTS.WALK_MINUTES_PER_KILOMETER
+  );
 }
 
 function findFirstUsableNavitimeItem(data) {
@@ -296,10 +438,63 @@ function findFirstUsableNavitimeItem(data) {
   });
 }
 
-function normalizeNavitimeRoute(data) {
-  const item = findFirstUsableNavitimeItem(data);
+function selectBestNavitimeItem(data) {
+  const items = Array.isArray(data?.items)
+    ? data.items
+    : [];
+  const candidates = items
+    .map((item, index) => {
+      const move = item?.summary?.move;
 
-  if (!item) {
+      if (
+        !isFiniteNumber(move?.time) ||
+        move.time < 0 ||
+        !isFiniteNumber(move?.distance) ||
+        move.distance < 0
+      ) {
+        return null;
+      }
+
+      const transitSummary =
+        createNavitimeTransitSummary(item);
+
+      if (transitSummary.transitLegCount === 0) {
+        return null;
+      }
+
+      return {
+        item,
+        index,
+        transitSummary,
+        score: getNavitimeCandidateScore(
+          item,
+          transitSummary
+        ),
+      };
+    })
+    .filter(Boolean);
+
+  candidates.sort((left, right) => {
+    return (
+      left.score - right.score ||
+      left.transitSummary.transferCount -
+        right.transitSummary.transferCount ||
+      left.item.summary.move.time -
+        right.item.summary.move.time ||
+      left.transitSummary.walkDistanceMeters -
+        right.transitSummary.walkDistanceMeters ||
+      left.index - right.index
+    );
+  });
+
+  return candidates[0] ?? null;
+}
+
+function normalizeNavitimeRoute(data) {
+  const selection = selectBestNavitimeItem(data);
+  const firstUsableItem = findFirstUsableNavitimeItem(data);
+
+  if (!firstUsableItem) {
     throw new TransitProviderError(
       "해당 시간의 대중교통 경로가 없습니다.",
       422,
@@ -308,10 +503,7 @@ function normalizeNavitimeRoute(data) {
     );
   }
 
-  const transitSummary =
-    createNavitimeTransitSummary(item);
-
-  if (transitSummary.transitLegCount === 0) {
+  if (!selection) {
     throw new TransitProviderError(
       "이 구간에는 이용 가능한 대중교통 경로가 없습니다.",
       422,
@@ -319,6 +511,8 @@ function normalizeNavitimeRoute(data) {
       "TRANSIT_WALK_ONLY"
     );
   }
+
+  const { item, transitSummary } = selection;
 
   return {
     distanceMeters: Math.round(item.summary.move.distance),
@@ -375,7 +569,10 @@ async function requestNavitimeTransitRoute(
   url.searchParams.set("datum", "wgs84");
   url.searchParams.set("coord_unit", "degree");
   url.searchParams.set("shape", "true");
-  url.searchParams.set("limit", "1");
+  url.searchParams.set(
+    "limit",
+    String(NAVITIME_ROUTE_LIMIT)
+  );
 
   let response;
 
@@ -428,6 +625,14 @@ async function requestNavitimeTransitRoute(
     );
   }
 
+  const selection = selectBestNavitimeItem(data);
+
+  if (IS_DEVELOPMENT && selection) {
+    console.info(
+      `[Transit] provider=NAVITIME candidates=${Array.isArray(data?.items) ? data.items.length : 0} selected=${selection.index} duration=${selection.item.summary.move.time} transfers=${selection.transitSummary.transferCount} walkMeters=${selection.transitSummary.walkDistanceMeters}`
+    );
+  }
+
   return normalizeNavitimeRoute(data);
 }
 
@@ -458,10 +663,13 @@ async function requestTransitRoute(
 
 module.exports = {
   DEFAULT_NAVITIME_RAPIDAPI_HOST,
+  NAVITIME_CANDIDATE_WEIGHTS,
+  NAVITIME_ROUTE_LIMIT,
   MAX_ROUTE_COORDINATES,
   TRANSIT_PROVIDERS,
   TransitProviderError,
   createNavitimeTransitSummary,
+  createNavitimeTransitLegs,
   findFirstUsableNavitimeItem,
   formatNavitimeStartTime,
   isJapanCountry,
@@ -470,5 +678,6 @@ module.exports = {
   normalizeNavitimeVehicleType,
   requestNavitimeTransitRoute,
   requestTransitRoute,
+  selectBestNavitimeItem,
   selectRouteProvider,
 };

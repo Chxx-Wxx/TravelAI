@@ -41,7 +41,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "주변 장소까지의 거리를 표시하기 위해 현재 위치를 사용합니다."
+          "locationWhenInUsePermission": "지도에 현재 위치와 주변 장소를 표시하기 위해 위치를 사용합니다."
         }
       ],
       "expo-font",
