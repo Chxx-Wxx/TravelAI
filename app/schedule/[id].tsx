@@ -16,6 +16,7 @@ import {
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
@@ -23,6 +24,10 @@ import {
   TextInput,
   View,
 } from "react-native";
+
+import {
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 
 import AppButton from "../../components/AppButton";
 import AppInput from "../../components/AppInput";
@@ -82,6 +87,10 @@ type StoredPlaceLink = {
 };
 
 export default function EditScheduleScreen() {
+  const safeAreaInsets = useSafeAreaInsets();
+  const locationInputRef = useRef<TextInput | null>(null);
+  const saveConfirmationRef = useRef(false);
+
   const { id } =
     useLocalSearchParams<{
       id: string;
@@ -194,6 +203,13 @@ export default function EditScheduleScreen() {
           originalPlace.name
         )
     );
+
+  const hasLinkedLocation =
+    selectedPlace &&
+    hasValidScheduleLocation({
+      latitude,
+      longitude,
+    });
 
   const {
     results: placeResults,
@@ -665,6 +681,68 @@ export default function EditScheduleScreen() {
     }
   }
 
+  function validateRequiredFields() {
+    if (
+      !title.trim() ||
+      !location.trim()
+    ) {
+      Alert.alert(
+        "입력 확인",
+        "일정 이름과 장소를 입력해주세요."
+      );
+
+      return false;
+    }
+
+    return true;
+  }
+
+  function handleUpdateRequest() {
+    if (
+      !id ||
+      savingRef.current ||
+      saveConfirmationRef.current ||
+      !validateRequiredFields()
+    ) {
+      return;
+    }
+
+    if (hasLinkedLocation) {
+      void handleUpdate();
+      return;
+    }
+
+    saveConfirmationRef.current = true;
+
+    Alert.alert(
+      "위치 없이 저장할까요?",
+      "이 일정은 지도와 이동 경로 계산에서 제외됩니다.",
+      [
+        {
+          text: "장소 연결하기",
+          style: "cancel",
+          onPress: () => {
+            saveConfirmationRef.current = false;
+            locationInputRef.current?.focus();
+          },
+        },
+        {
+          text: "위치 없이 저장",
+          onPress: () => {
+            saveConfirmationRef.current = false;
+            void handleUpdate(null);
+          },
+        },
+      ],
+      {
+        cancelable: true,
+        onDismiss: () => {
+          saveConfirmationRef.current = false;
+        },
+      }
+    );
+  }
+
   function offerUpdateWithoutLocation(
     message: string
   ) {
@@ -692,7 +770,10 @@ export default function EditScheduleScreen() {
       return;
     }
 
-    if (savingRef.current) {
+    if (
+      !validateRequiredFields() ||
+      savingRef.current
+    ) {
       return;
     }
 
@@ -711,18 +792,6 @@ export default function EditScheduleScreen() {
     placeOverride?: PlaceResult | null
   ) {
     if (!id) {
-      return;
-    }
-
-    if (
-      !title.trim() ||
-      !location.trim()
-    ) {
-      Alert.alert(
-        "입력 확인",
-        "일정 이름과 장소를 입력해주세요."
-      );
-
       return;
     }
 
@@ -889,19 +958,34 @@ const tripStart =
   }
 
   return (
-    <ScrollView
+    <KeyboardAvoidingView
       style={{
         flex: 1,
         backgroundColor:
           "#F5F7FB",
       }}
-      contentContainerStyle={{
-        paddingHorizontal: 20,
-        paddingTop: 70,
-        paddingBottom: 70,
-      }}
-      keyboardShouldPersistTaps="handled"
+      behavior={
+        Platform.OS === "ios"
+          ? "padding"
+          : undefined
+      }
     >
+      <ScrollView
+        style={{
+          flex: 1,
+        }}
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 70,
+          paddingBottom: 36,
+        }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={
+          Platform.OS === "ios"
+            ? "interactive"
+            : "on-drag"
+        }
+      >
       <Text
         style={{
           fontSize: 32,
@@ -939,6 +1023,7 @@ const tripStart =
         }}
       >
         <TextInput
+          ref={locationInputRef}
           value={location}
           onChangeText={
             handleLocationChange
@@ -999,7 +1084,7 @@ const tripStart =
         </Pressable>
       </View>
 
-      {selectedPlace && (
+      {hasLinkedLocation && (
         <View
           style={{
             marginTop: 10,
@@ -1033,7 +1118,7 @@ const tripStart =
         </View>
       )}
 
-      {!selectedPlace && (
+      {location.trim() && !hasLinkedLocation && (
         <View
           style={{
             marginTop: 10,
@@ -1050,7 +1135,7 @@ const tripStart =
               fontSize: 13,
             }}
           >
-            위치 미연결
+            위치가 연결되지 않았습니다.
           </Text>
 
           <Text
@@ -1061,7 +1146,7 @@ const tripStart =
               lineHeight: 17,
             }}
           >
-            장소를 검색해 선택하면 지도와 일정 날씨를 사용할 수 있습니다.
+            지도·이동 경로·위치 기반 기능에서 제외됩니다.
           </Text>
         </View>
       )}
@@ -1335,9 +1420,19 @@ const tripStart =
         }
       />
 
+      </ScrollView>
+
       <View
         style={{
-          marginTop: 10,
+          paddingHorizontal: 20,
+          paddingTop: 10,
+          paddingBottom: Math.max(
+            safeAreaInsets.bottom,
+            12
+          ),
+          borderTopWidth: 1,
+          borderTopColor: "#E5E7EB",
+          backgroundColor: "white",
         }}
       >
         <AppButton
@@ -1347,11 +1442,9 @@ const tripStart =
               : "수정 내용 저장"
           }
           disabled={saving}
-          onPress={() =>
-            void handleUpdate()
-          }
+          onPress={handleUpdateRequest}
         />
       </View>
-    </ScrollView>
+    </KeyboardAvoidingView>
   );
 }

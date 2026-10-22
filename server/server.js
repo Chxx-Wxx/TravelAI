@@ -11,6 +11,12 @@ const {
   query,
 } = require("./db");
 
+const {
+  RouteServiceError,
+  computeCachedRoute,
+  normalizeRouteRequest,
+} = require("./route-service");
+
 const app = express();
 
 app.use(cors());
@@ -306,6 +312,93 @@ app.post(
     } catch (error) {
       console.error(
         "Places 서버 오류:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          message:
+            "서버 오류가 발생했습니다.",
+        });
+    }
+  }
+);
+
+// ======================================================
+// Route providers
+// ======================================================
+
+app.post(
+  "/routes/compute",
+  async (req, res) => {
+    try {
+      const routeRequest =
+        normalizeRouteRequest(
+          req.body
+        );
+
+      const route =
+        await computeCachedRoute(
+          routeRequest,
+          {
+            googleApiKey:
+              process.env
+                .GOOGLE_MAPS_API_KEY,
+            navitimeApiKey:
+              process.env
+                .NAVITIME_RAPIDAPI_KEY,
+            navitimeHost:
+              process.env
+                .NAVITIME_RAPIDAPI_HOST,
+          }
+        );
+
+      return res.json({
+        route,
+      });
+    } catch (error) {
+      if (
+        error instanceof
+        RouteServiceError
+      ) {
+        if (
+          error.statusCode >=
+          500
+        ) {
+          console.error(
+            "Routes API 오류:",
+            {
+              message:
+                error.message,
+              code:
+                error.code,
+              upstreamStatus:
+                error.upstreamStatus,
+            }
+          );
+        }
+
+        return res
+          .status(
+            error.statusCode
+          )
+          .json({
+            message:
+              error.statusCode <
+              500
+                ? error.message
+                : "경로 정보를 불러올 수 없습니다.",
+            ...(error.code
+              ? {
+                  code: error.code,
+                }
+              : {}),
+          });
+      }
+
+      console.error(
+        "Routes 서버 오류:",
         error
       );
 

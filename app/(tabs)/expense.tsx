@@ -1,6 +1,7 @@
 import {
   useCallback,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -382,6 +383,48 @@ export default function ExpenseScreen() {
     settlementPayments,
     setSettlementPayments,
   ] = useState<SettlementPayment[]>([]);
+
+  const expenseSaveLockRef = useRef(false);
+  const [savingExpense, setSavingExpense] =
+    useState(false);
+
+  const settlementMutationLockRef =
+    useRef<string | null>(null);
+
+  const [
+    processingSettlementAction,
+    setProcessingSettlementAction,
+  ] = useState<string | null>(null);
+
+  function beginSettlementMutation(
+    actionKey: string
+  ) {
+    if (settlementMutationLockRef.current) {
+      return false;
+    }
+
+    settlementMutationLockRef.current =
+      actionKey;
+    setProcessingSettlementAction(
+      actionKey
+    );
+
+    return true;
+  }
+
+  function finishSettlementMutation(
+    actionKey: string
+  ) {
+    if (
+      settlementMutationLockRef.current !==
+      actionKey
+    ) {
+      return;
+    }
+
+    settlementMutationLockRef.current = null;
+    setProcessingSettlementAction(null);
+  }
 
   const [budget, setBudget] =
     useState("");
@@ -1430,18 +1473,30 @@ export default function ExpenseScreen() {
           undefined,
       };
 
-    const current =
-      await getExpenses();
+    if (expenseSaveLockRef.current) {
+      return;
+    }
 
-    await saveExpenses([
-      ...current,
-      newExpense,
-    ]);
+    expenseSaveLockRef.current = true;
+    setSavingExpense(true);
 
-    setAmount("");
-    setMemo("");
+    try {
+      const current =
+        await getExpenses();
 
-    await loadData();
+      await saveExpenses([
+        ...current,
+        newExpense,
+      ]);
+
+      setAmount("");
+      setMemo("");
+
+      await loadData();
+    } finally {
+      expenseSaveLockRef.current = false;
+      setSavingExpense(false);
+    }
   }
 
   function handleDelete(
@@ -1474,7 +1529,7 @@ export default function ExpenseScreen() {
     );
   }
 
-  async function toggleLoanSettlement(
+  function toggleLoanSettlement(
     expense: ExpenseWithSnapshot
   ) {
     if (
@@ -1524,90 +1579,114 @@ export default function ExpenseScreen() {
       return;
     }
 
-    Alert.alert(
-      isCompleting
-        ? "정산 완료"
-        : "정산 완료 취소",
+    const actionKey = `loan:${expense.id}`;
 
-      isCompleting
-        ? `${borrowerLabel} → ${lenderLabel}\n₩${formatMoney(
-            expense.krwAmount
-          )}\n\n실제로 갚은 것이 맞나요?`
-        : "이 대여금을 다시 미정산 상태로 바꿀까요?",
+    if (!beginSettlementMutation(actionKey)) {
+      return;
+    }
 
-      [
+    try {
+      Alert.alert(
+        isCompleting
+          ? "정산 완료"
+          : "정산 완료 취소",
+
+        isCompleting
+          ? `${borrowerLabel} → ${lenderLabel}\n₩${formatMoney(
+              expense.krwAmount
+            )}\n\n실제로 갚은 것이 맞나요?`
+          : "이 대여금을 다시 미정산 상태로 바꿀까요?",
+
+        [
+          {
+            text: "취소",
+            style: "cancel",
+            onPress: () =>
+              finishSettlementMutation(
+                actionKey
+              ),
+          },
+
+          {
+            text:
+              isCompleting
+                ? "정산 완료"
+                : "미정산으로 변경",
+
+            onPress:
+              async () => {
+                try {
+                  if (expense.loanSettled) {
+                    const current =
+                      await getExpenses();
+                    const updated = current.map(
+                      (item: Expense) =>
+                        item.id === expense.id
+                          ? {
+                              ...item,
+                              loanSettled: false,
+                              loanSettledAt: undefined,
+                            }
+                          : item
+                    );
+
+                    await saveExpenses(updated);
+                  } else if (directLoanPayment) {
+                    await deleteSettlementPayment(
+                      directLoanPayment.id
+                    );
+                  } else if (relation) {
+                    const current =
+                      await getSettlementPayments();
+                    const newPayment: SettlementPayment = {
+                      id: Date.now().toString(),
+                      source: "loan",
+                      fromMemberId: relation.fromMemberId,
+                      toMemberId: relation.toMemberId,
+                      amountKrw: relation.amountKrw,
+                      date: getTodayString(),
+                      resolvedRelations: [relation],
+                    };
+
+                    await saveSettlementPayments([
+                      ...current,
+                      newPayment,
+                    ]);
+                  } else {
+                    // 이름 기반 legacy 대여는 기존 필드를 그대로 사용한다.
+                    const current =
+                      await getExpenses();
+                    const updated = current.map(
+                      (item: Expense) =>
+                        item.id === expense.id
+                          ? {
+                              ...item,
+                              loanSettled: true,
+                              loanSettledAt: getTodayString(),
+                            }
+                          : item
+                    );
+
+                    await saveExpenses(updated);
+                  }
+
+                  await loadData();
+                } finally {
+                  finishSettlementMutation(
+                    actionKey
+                  );
+                }
+              },
+          },
+        ],
         {
-          text: "취소",
-          style: "cancel",
-        },
-
-        {
-          text:
-            isCompleting
-              ? "정산 완료"
-              : "미정산으로 변경",
-
-          onPress:
-            async () => {
-              if (expense.loanSettled) {
-                const current =
-                  await getExpenses();
-                const updated = current.map(
-                  (item: Expense) =>
-                    item.id === expense.id
-                      ? {
-                          ...item,
-                          loanSettled: false,
-                          loanSettledAt: undefined,
-                        }
-                      : item
-                );
-
-                await saveExpenses(updated);
-              } else if (directLoanPayment) {
-                await deleteSettlementPayment(
-                  directLoanPayment.id
-                );
-              } else if (relation) {
-                const current =
-                  await getSettlementPayments();
-                const newPayment: SettlementPayment = {
-                  id: Date.now().toString(),
-                  source: "loan",
-                  fromMemberId: relation.fromMemberId,
-                  toMemberId: relation.toMemberId,
-                  amountKrw: relation.amountKrw,
-                  date: getTodayString(),
-                  resolvedRelations: [relation],
-                };
-
-                await saveSettlementPayments([
-                  ...current,
-                  newPayment,
-                ]);
-              } else {
-                // 이름 기반 legacy 대여는 기존 필드를 그대로 사용한다.
-                const current =
-                  await getExpenses();
-                const updated = current.map(
-                  (item: Expense) =>
-                    item.id === expense.id
-                      ? {
-                          ...item,
-                          loanSettled: true,
-                          loanSettledAt: getTodayString(),
-                        }
-                      : item
-                );
-
-                await saveExpenses(updated);
-              }
-
-              await loadData();
-            },
-        },
-      ]
-    );
+          cancelable: false,
+        }
+      );
+    } catch (error) {
+      finishSettlementMutation(actionKey);
+      throw error;
+    }
   }
 
   function rateLabel() {
@@ -1728,103 +1807,152 @@ export default function ExpenseScreen() {
       settlement.toMemberId === currentMemberId
   ).length;
 
-  async function completeSettlement(
+  function completeSettlement(
     settlement: ExpenseSettlement
   ) {
-    Alert.alert(
-      "정산 완료",
-      `${settlement.fromLabel} → ${settlement.toLabel}\n₩${formatMoney(
-        settlement.amount
-      )}\n\n실제로 송금이 완료됐나요?`,
-      [
+    const actionKey =
+      `final:${settlement.fromKey}:${settlement.toKey}`;
+
+    if (!beginSettlementMutation(actionKey)) {
+      return;
+    }
+
+    try {
+      Alert.alert(
+        "정산 완료",
+        `${settlement.fromLabel} → ${settlement.toLabel}\n₩${formatMoney(
+          settlement.amount
+        )}\n\n실제로 송금이 완료됐나요?`,
+        [
+          {
+            text: "취소",
+            style: "cancel",
+            onPress: () =>
+              finishSettlementMutation(
+                actionKey
+              ),
+          },
+
+          {
+            text: "완료",
+
+            onPress:
+              async () => {
+                try {
+                  const resolvedRelations =
+                    getRelationsResolvedBySettlement(
+                      expenses,
+                      settlementPayments,
+                      settlement
+                    );
+                  const newPayment: SettlementPayment =
+                    {
+                      id:
+                        Date.now().toString(),
+
+                      source: "final",
+
+                      fromMemberId:
+                        settlement.fromMemberId,
+
+                      toMemberId:
+                        settlement.toMemberId,
+
+                      from:
+                        settlement.fromLegacyName,
+
+                      to:
+                        settlement.toLegacyName,
+
+                      amountKrw:
+                        settlement.amount,
+
+                      date:
+                        getTodayString(),
+
+                      resolvedRelations,
+                    };
+
+                  const current =
+                    await getSettlementPayments();
+
+                  await saveSettlementPayments(
+                    [
+                      ...current,
+                      newPayment,
+                    ]
+                  );
+
+                  await loadData();
+                } finally {
+                  finishSettlementMutation(
+                    actionKey
+                  );
+                }
+              },
+          },
+        ],
         {
-          text: "취소",
-          style: "cancel",
-        },
-
-        {
-          text: "완료",
-
-          onPress:
-            async () => {
-              const resolvedRelations =
-                getRelationsResolvedBySettlement(
-                  expenses,
-                  settlementPayments,
-                  settlement
-                );
-              const newPayment: SettlementPayment =
-                {
-                  id:
-                    Date.now().toString(),
-
-                  source: "final",
-
-                  fromMemberId:
-                    settlement.fromMemberId,
-
-                  toMemberId:
-                    settlement.toMemberId,
-
-                  from:
-                    settlement.fromLegacyName,
-
-                  to:
-                    settlement.toLegacyName,
-
-                  amountKrw:
-                    settlement.amount,
-
-                  date:
-                    getTodayString(),
-
-                  resolvedRelations,
-                };
-
-              const current =
-                await getSettlementPayments();
-
-              await saveSettlementPayments(
-                [
-                  ...current,
-                  newPayment,
-                ]
-              );
-
-              await loadData();
-            },
-        },
-      ]
-    );
+          cancelable: false,
+        }
+      );
+    } catch (error) {
+      finishSettlementMutation(actionKey);
+      throw error;
+    }
   }
 
-  async function cancelSettlement(
+  function cancelSettlement(
     payment: SettlementPayment
   ) {
-    Alert.alert(
-      "정산 완료 취소",
-      "이 정산 완료 기록을 취소할까요?",
-      [
+    const actionKey = `payment:${payment.id}`;
+
+    if (!beginSettlementMutation(actionKey)) {
+      return;
+    }
+
+    try {
+      Alert.alert(
+        "정산 완료 취소",
+        "이 정산 완료 기록을 취소할까요?",
+        [
+          {
+            text: "취소",
+            style: "cancel",
+            onPress: () =>
+              finishSettlementMutation(
+                actionKey
+              ),
+          },
+
+          {
+            text:
+              "완료 취소",
+
+            onPress:
+              async () => {
+                try {
+                  await deleteSettlementPayment(
+                    payment.id
+                  );
+
+                  await loadData();
+                } finally {
+                  finishSettlementMutation(
+                    actionKey
+                  );
+                }
+              },
+          },
+        ],
         {
-          text: "취소",
-          style: "cancel",
-        },
-
-        {
-          text:
-            "완료 취소",
-
-          onPress:
-            async () => {
-              await deleteSettlementPayment(
-                payment.id
-              );
-
-              await loadData();
-            },
-        },
-      ]
-    );
+          cancelable: false,
+        }
+      );
+    } catch (error) {
+      finishSettlementMutation(actionKey);
+      throw error;
+    }
   }
 
   function formatExpenseDate(date: string) {
@@ -3214,17 +3342,26 @@ export default function ExpenseScreen() {
         />
 
         <Pressable
+          disabled={
+            savingExpense
+          }
           onPress={
             handleAddExpense
           }
           style={{
             marginTop: 16,
             backgroundColor:
-              "#3B82F6",
+              savingExpense
+                ? "#93C5FD"
+                : "#3B82F6",
             paddingVertical: 14,
             borderRadius: 12,
             alignItems:
               "center",
+            opacity:
+              savingExpense
+                ? 0.7
+                : 1,
           }}
         >
           <Text
@@ -3233,7 +3370,9 @@ export default function ExpenseScreen() {
               fontWeight: "bold",
             }}
           >
-            기록 저장
+            {savingExpense
+              ? "저장 중..."
+              : "기록 저장"}
           </Text>
         </Pressable>
       </View>
@@ -3271,6 +3410,11 @@ export default function ExpenseScreen() {
         ) : (
           settlements.map(
             (settlement, index) => {
+              const actionKey =
+                `final:${settlement.fromKey}:${settlement.toKey}`;
+              const isProcessing =
+                processingSettlementAction ===
+                actionKey;
               const isCurrentFrom =
                 settlement.fromMemberId ===
                 currentMemberId;
@@ -3442,6 +3586,10 @@ export default function ExpenseScreen() {
                 )}
 
                 <Pressable
+                  disabled={
+                    processingSettlementAction !==
+                    null
+                  }
                   onPress={() =>
                     completeSettlement(
                       settlement
@@ -3449,11 +3597,18 @@ export default function ExpenseScreen() {
                   }
                   style={{
                     marginTop: 16,
-                    backgroundColor: "#C2410C",
+                    backgroundColor: isProcessing
+                      ? "#9CA3AF"
+                      : "#C2410C",
                     paddingVertical: 12,
                     borderRadius: 12,
                     alignItems:
                       "center",
+                    opacity:
+                      processingSettlementAction &&
+                      !isProcessing
+                        ? 0.55
+                        : 1,
                   }}
                 >
                   <Text
@@ -3463,7 +3618,9 @@ export default function ExpenseScreen() {
                         "bold",
                     }}
                   >
-                    정산 완료
+                    {isProcessing
+                      ? "처리 중..."
+                      : "정산 완료"}
                   </Text>
                 </Pressable>
                 </View>
@@ -3496,6 +3653,11 @@ export default function ExpenseScreen() {
 
           {settlementPayments.map(
             (payment) => {
+              const actionKey =
+                `payment:${payment.id}`;
+              const isProcessing =
+                processingSettlementAction ===
+                actionKey;
               const fromLabel = getExpensePartyLabel(
                 payment.fromMemberId,
                 payment.from,
@@ -3584,6 +3746,10 @@ export default function ExpenseScreen() {
                 </Text>
 
                 <Pressable
+                  disabled={
+                    processingSettlementAction !==
+                    null
+                  }
                   onPress={() =>
                     cancelSettlement(
                       payment
@@ -3594,6 +3760,11 @@ export default function ExpenseScreen() {
                     marginTop: 6,
                     paddingHorizontal: 4,
                     paddingVertical: 4,
+                    opacity:
+                      processingSettlementAction &&
+                      !isProcessing
+                        ? 0.45
+                        : 1,
                   }}
                 >
                   <Text
@@ -3602,7 +3773,9 @@ export default function ExpenseScreen() {
                       fontSize: 12,
                     }}
                   >
-                    정산 완료 취소
+                    {isProcessing
+                      ? "처리 중..."
+                      : "정산 완료 취소"}
                   </Text>
                 </Pressable>
               </View>
@@ -3674,6 +3847,11 @@ export default function ExpenseScreen() {
                 loanRelationPayment &&
                 loanRelationPayment.source !== "loan"
             );
+            const loanActionKey =
+              `loan:${expense.id}`;
+            const isProcessingLoanSettlement =
+              processingSettlementAction ===
+              loanActionKey;
             const participants = isShared
               ? getSharedParticipantLabels(expense)
               : [];
@@ -4059,6 +4237,10 @@ export default function ExpenseScreen() {
                     </View>
                   ) : (
                     <Pressable
+                      disabled={
+                        processingSettlementAction !==
+                        null
+                      }
                       onPress={() =>
                         toggleLoanSettlement(expense)
                       }
@@ -4074,6 +4256,11 @@ export default function ExpenseScreen() {
                         borderColor: isLoanSettled
                           ? "#BBF7D0"
                           : "#FECACA",
+                        opacity:
+                          processingSettlementAction &&
+                          !isProcessingLoanSettlement
+                            ? 0.55
+                            : 1,
                       }}
                     >
                       <Text
@@ -4084,9 +4271,11 @@ export default function ExpenseScreen() {
                           fontWeight: "bold",
                         }}
                       >
-                        {isLoanSettled
-                          ? "정산 완료 취소"
-                          : "대여금 정산 완료"}
+                        {isProcessingLoanSettlement
+                          ? "처리 중..."
+                          : isLoanSettled
+                            ? "정산 완료 취소"
+                            : "대여금 정산 완료"}
                       </Text>
                     </Pressable>
                   )}

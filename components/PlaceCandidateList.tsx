@@ -33,11 +33,11 @@ export default function PlaceCandidateList({
 
   if (results.length === 0) return null;
 
-  const maximum = Math.min(results.length, MAX_VISIBLE_RESULTS);
   const visibleCount =
     expandedResultKey === resultKey
       ? MAX_VISIBLE_RESULTS
       : INITIAL_VISIBLE_RESULTS;
+  const maximum = Math.min(results.length, MAX_VISIBLE_RESULTS);
   const visibleResults = results.slice(0, visibleCount);
   const canShowMore = visibleCount < maximum;
 

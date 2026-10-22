@@ -25,6 +25,7 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 
 작업할 때 다음 규칙을 지킨다.
 
+* 새 Codex 세션에서는 `PROJECT_CONTEXT.md`와 `AGENTS.md`를 먼저 읽고, 실제 작업 대상 코드를 다시 확인한다.
 * 수정 전에 관련 기존 파일을 먼저 읽는다.
 * 현재 프로젝트 구조를 최대한 유지한다.
 * 필요 없는 파일까지 수정하지 않는다.
@@ -56,21 +57,33 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 
 현재 프로젝트는 다음 기술을 사용한다.
 
-* React Native
-* Expo
-* TypeScript
-* Expo Router 기반 구조
+* React Native 0.86.3
+* Expo SDK 57 (`expo` 57.0.20)
+* React 19.2.3
+* TypeScript 6.0.3
+* Expo Router 57.0.19 기반 구조
+* AsyncStorage
+* expo-location
 * Node.js
 * Express
 * PostgreSQL (Neon)
 * dotenv
 * cors
 * Google Places API (New)
-* Google Maps 관련 기능
+* react-native-maps 1.27.2
+* Google Routes API (WALK, 비일본 TRANSIT)
+* NAVITIME Route(totalnavi) via RapidAPI (일본 TRANSIT)
+* Open-Meteo Geocoding / Forecast API
 * Git
 * GitHub
 
 저장소 코드에서 변경된 사실이 확인되지 않는 이상 위 구조를 기준으로 한다.
+
+현재 Expo Go SDK 57을 기준으로 개발한다. SDK 57 호환을 위해 적용된
+`expo-router/react-navigation`, `expo-router/js-tabs` import를 과거 직접
+`@react-navigation/*` import로 되돌리지 않는다. React Compiler/TypeScript 6 호환 수정과
+`app.json`에서 제거된 `newArchEnabled`, `android.edgeToEdgeEnabled`도 실제 문제 근거 없이
+복원하지 않는다.
 
 ---
 
@@ -122,10 +135,27 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 * 여행 API
 * 일정 API
 * 사용자 identity와 여행 멤버 API
+* Google Routes WALK와 provider별 TRANSIT 경로 API (`POST /routes/compute`)
 
 `DATABASE_URL`이 있으면 Neon PostgreSQL의 `trips`, `schedules`, `users`,
 `trip_members` 테이블을 사용한다. 환경변수가 없으면 개발 편의를 위해 동일 기능을
 in-memory 저장소로 fallback하며, 이 모드에서는 서버 재시작 시 데이터가 사라질 수 있다.
+
+route API는 `server/route-service.js`에서 입력과 좌표를 검증하고 provider 공통 응답을 만든다.
+WALK는 항상 Google Routes, 일본 TRANSIT은 NAVITIME Route(totalnavi), 비일본 TRANSIT은
+Google Routes를 사용한다. route 결과는 최대 500개의 process memory cache와 같은 key의
+in-flight Promise 공유를 사용하며 DB에는 저장하지 않는다. WALK TTL은 24시간, TRANSIT TTL은
+15분이다. cache key에는 mode, provider와 TRANSIT departureTime도 포함되고 서버 재시작 시
+cache가 사라진다. Google은 `GOOGLE_MAPS_API_KEY`, NAVITIME은 `NAVITIME_RAPIDAPI_KEY`와
+선택 값인 `NAVITIME_RAPIDAPI_HOST`를 서버에서만 사용한다.
+
+예산, 지출, 정산, 준비물은 서버 API나 DB에 저장하지 않고 현재 tripId별
+AsyncStorage에 저장한다. `expense`, `settlement`, `packing` 테이블이 있다고 가정하지 않는다.
+
+현재 여행 snapshot이 로컬에 있으나 서버 조회가 404이면 홈, 일정, 일정 생성/수정,
+지출 화면에서 서버 여행을 자동 복구할 수 있다. 네트워크 오류나 500에서는 복구하지 않으며,
+사라진 일정은 자동 복구하지 않는다. 같은 여행의 동시 복구는 single-flight로 합치고
+삭제 중인 여행을 되살리지 않는 보호 로직을 유지한다.
 
 사용자가 요청하지 않는 이상 임의로 DB 구조로 변경하지 않는다.
 
@@ -201,6 +231,9 @@ EXPO_PUBLIC_API_URL=https://xxxxx.ngrok-free.dev/places/search
 
 ```env
 GOOGLE_MAPS_API_KEY=YOUR_KEY
+NAVITIME_RAPIDAPI_KEY=YOUR_KEY
+NAVITIME_RAPIDAPI_HOST=navitime-route-totalnavi.p.rapidapi.com
+DATABASE_URL=YOUR_NEON_CONNECTION_STRING
 ```
 
 실제 키는 절대 Git에 올리지 않는다.
@@ -209,24 +242,33 @@ GOOGLE_MAPS_API_KEY=YOUR_KEY
 
 ## 8. 개발 서버 실행 방식
 
-일반적인 개발 환경에서는 터미널 3개를 사용한다.
+기본 개발 환경은 집 Windows PC의 `C:\projects\TravelAI`이며, Git Bash에서는
+`cd /c/projects/TravelAI`를 사용한다. 일반적으로 터미널 3개를 사용할 수 있다.
 
 ### 터미널 1 - Express 서버
 
 ```bash
-cd server
-node server.js
+cd /c/projects/TravelAI/server
+npm start
 ```
 
-기본 포트:
+`npm start`는 `node server.js`와 동일하다. 기본 포트는 `4000`이며, PostgreSQL 개발 모드에서는
+다음 로그를 함께 확인한다.
 
-`4000`
+```text
+TravelAI storage: PostgreSQL
+TravelAI server running on port 4000
+```
+
+포트 로그만 확인하지 말고 `DATABASE_URL`이 적용된 PostgreSQL mode인지 확인한다.
 
 ### 터미널 2 - ngrok
 
 ```bash
 ngrok http 4000
 ```
+
+로컬 구성에 따라 `npx ngrok http 4000`을 사용할 수도 있다.
 
 ngrok에서 생성된 HTTPS 주소를 프론트 `.env`에 넣는다.
 
@@ -238,52 +280,41 @@ EXPO_PUBLIC_API_URL=https://xxxxx.ngrok-free.dev
 
 ### 터미널 3 - Expo
 
-학교에서는 네트워크 제한 때문에 일반 LAN 연결이 불안정할 수 있다.
-
-학교에서 우선 사용하는 명령:
-
-```bash
-npx expo start --tunnel
-```
-
-집에서는 일반적으로:
+먼저 다음 명령을 사용한다.
 
 ```bash
 npx expo start
 ```
 
-를 먼저 사용할 수 있다.
+집 네트워크에서 직접 연결되지 않을 때만:
+
+```bash
+npx expo start --tunnel
+```
 
 중요:
 
-* Expo tunnel = 아이폰과 Expo 개발 서버 연결
-* ngrok = 아이폰 앱과 Express 서버 4000 포트 연결
+* Expo tunnel = iPhone Expo Go와 Metro/Expo 개발 서버 연결
+* ngrok = React Native 앱과 Express 서버 4000 포트 연결
 
 둘은 역할이 다르다.
 
 ---
 
-## 9. 여러 PC에서 개발할 때
+## 9. 집 PC에서 개발 재개
 
-TravelAI는 집 PC와 학교 PC 등 여러 PC에서 개발한다.
+앞으로 기본 개발은 현재 집 PC 한 대에서 진행한다. 세션 시작 시:
 
-이미 저장소가 있는 PC에서 작업 시작 전:
+1. `cd /c/projects/TravelAI`
+2. `git status`
+3. `git pull origin main`
+4. lockfile 또는 의존성이 바뀌었으면 루트에서 `npm install`
+5. `server`에서도 별도로 `npm install`
+6. 루트 `.env`와 `server/.env` 확인
+7. backend, 필요 시 ngrok, Expo 순으로 실행
 
-```bash
-git pull
-```
-
-새 PC에서는:
-
-1. Git 설치
-2. Node.js 설치
-3. VS Code 설치
-4. 저장소 clone
-5. 루트에서 `npm install`
-6. 필요하면 `server`에서도 `npm install`
-7. `.env` 복구
-8. ngrok 설정
-9. Expo 및 서버 실행
+루트와 `server`는 각각 `package.json`을 사용한다. backend dependency는 `server` 폴더에서
+별도로 설치해야 하며, 루트 `npm install`만으로 `pg` 같은 서버 모듈이 보장되지 않는다.
 
 Git으로 자동 동기화되지 않는 항목:
 
@@ -292,9 +323,9 @@ Git으로 자동 동기화되지 않는 항목:
 * ngrok 인증 설정
 * 글로벌 설치 프로그램
 * VS Code 확장
-* PC별 네트워크 설정
+* 로컬 네트워크 설정
 
-새 라이브러리나 별도 설치 도구가 추가되면 다른 PC에서도 설치가 필요한지 사용자에게 반드시 알려준다.
+새 라이브러리나 별도 설치 도구가 추가되면 어느 폴더에서 설치해야 하는지 사용자에게 알려준다.
 
 ---
 
@@ -303,20 +334,24 @@ Git으로 자동 동기화되지 않는 항목:
 일반 작업 시작:
 
 ```bash
-git pull
+git status
+git pull origin main
 ```
 
-긴 개발 세션에서는 기능 단위로 안정된 시점에 중간 커밋을 권장한다.
+작업 중에는 실제 동작을 확인하고 변경 범위에 맞는 TypeScript, ESLint 등의 검사를 실행한다.
+테스트하지 않은 변경을 자동으로 commit/push하지 않는다.
 
 작업 종료 전:
 
 ```bash
+git status
 git add .
 git commit -m "작업 내용"
 git push
 ```
 
 사용자가 명확하게 요청하지 않는 이상 Codex가 임의로 `git commit` 또는 `git push`를 실행하지 않는다.
+긴 개발 세션에서는 사용자와 합의한 기능 단위의 안정된 시점에 중간 커밋을 권장할 수 있다.
 
 절대로 커밋하면 안 되는 것:
 
@@ -359,32 +394,23 @@ git push
 
 따라서 일반 일정 항목을 체크리스트처럼 다루지 않는다.
 
-향후 실제로 방문한 장소는 별도의:
+방문 도장/방문 기록 기능은 현재 계획에서 제외되어 있으므로 TODO로 다시 추가하지 않는다.
 
-**방문 도장 / 방문 기록**
+일정 목록의 날짜 섹션 순서는 항상 여행 1일차부터 유지한다. 최초 진입 시에만 기기 로컬 오늘을
+여행 범위에 clamp한 날짜로 자동 scroll하고, 이후 사용자의 수동 scroll을 다시 덮어쓰지 않는다.
+UTC `toISOString()` 날짜로 바꾸거나 지도와 다른 초기 날짜 정책을 만들지 않는다.
 
-기능으로 관리하는 방향을 고려한다.
+일정 생성·수정은 Safe Area/키보드를 고려한 하단 고정 저장 CTA, React saving state와 동기
+`useRef` lock을 유지한다. 유효 좌표가 없는 일정은 오류가 아니며 안내와 `위치 없이 저장할까요?`
+확인을 거쳐 저장할 수 있어야 한다. 기존 linked 일정의 장소 텍스트를 바꾸지 않은 경우 위치 연결을
+보존하는 정책과 `hasValidScheduleLocation` 판별을 재사용한다.
 
 ---
 
-## 13. 방문 도장 방향
+## 13. 계획 제외 사항
 
-향후 방문 도장 기능을 고려한다.
-
-목적:
-
-실제로 방문한 장소를 기록한다.
-
-활용 가능 항목:
-
-* 여행 종료 요약
-* 실제 방문 장소 수
-* 방문 식당 수
-* 많이 머문 지역
-* 추억 화면
-* 회고 화면
-
-방문 도장은 일정 완료 체크와 다른 개념이다.
+방문 도장/방문 기록은 현재 개발 계획에서 제외되어 있다. 사용자의 새 요청 없이 일정 완료
+체크나 방문 기록 기능을 추가하지 않는다.
 
 ---
 
@@ -430,26 +456,66 @@ git push
 
 ## 16. 지도/동선 방향
 
-지도에서는 향후 하루 이동 흐름을 한눈에 이해할 수 있어야 한다.
+지도에서는 하루 이동 흐름과 현재 일정 순서의 인접 구간별 추천 이동수단을 보여준다.
 
-목표 기능:
+현재 구현된 기능:
 
-* 일정 장소 마커
-* 이동 순서
-* 경로 선
-* 하루 동선
-* 경로 최적화
-* 일정 변경 반영
+* 일정 장소 marker와 전체 시간순 일정 기준 번호
+* 선택 날짜의 시간순 이동 순서와 체류시간
+* WALK는 Google Routes, 일본 TRANSIT은 NAVITIME Route(totalnavi), 비일본 TRANSIT은 Google Routes
+* WALK 거리·시간, TRANSIT 시간과 양쪽 Polyline, TRANSIT 노선·환승·운임 표시
+* segment별 WALK/TRANSIT `loading | available | unavailable` availability
+* WALK no-route와 TRANSIT walk-only를 unusable로 처리하는 대칭 fallback
+* 시간·운임·환승·TRANSIT 내부 도보량을 비교하는 AUTO 기본 추천
+* 주요 도쿄·오사카 노선 한국어 display mapping과 NFKC 원문 fallback
+* backend cache/in-flight 공유와 frontend 후보 cache
+* 좌표가 없는 일정의 목록 유지와 미등록 안내
+* 기기 로컬 오늘을 여행 범위에 clamp한 최초 날짜 선택과 같은 여행 내 사용자 선택 유지
 
-장소 저장 시 가능하면 다음 정보를 유지한다.
+canonical WALK 결과는 항상 Google Routes다. TRANSIT 결과에 실제 transit leg가 없으면 NAVITIME의
+도보 시간·거리를 WALK로 쓰지 않고 TRANSIT unavailable로 처리한다. 한 mode만 가능하면 자동
+선택하고 unavailable chip은 비활성화한다. 둘 다 가능할 때만 수동 변경할 수 있으며 사용자의
+직접 선택을 AUTO가 다시 덮어쓰지 않는다. 둘 다 불가능할 때만 공통 unavailable 상태를 표시한다.
 
-* placeId
-* 장소명
-* 위도
-* 경도
-* 주소
+AUTO 점수의 1차 기준은 다음과 같다.
 
-Places API에서 받은 좌표나 placeId를 불필요하게 버리지 않는다.
+* WALK = 총 도보시간
+* TRANSIT = 실제시간 + 탑승 기본 4분 + 환승당 5분 + 운임 60엔당 1분 + 내부도보 1km당 2분
+
+점수와 추천 이유는 UI에 노출하지 않는다. 상수는 `lib/route-recommendation.ts`에 두고 실제 사용
+사례를 바탕으로 조정한다. 이 AUTO는 **현재 일정 순서 안에서 segment의 이동수단을 선택**할 뿐,
+장소나 일정 순서를 재배열하는 Route 순서 최적화가 아니다.
+
+route segment는 전체 시간순 일정의 **인접 pair**만 대상으로 한다. 중간에 unlinked 일정이 있으면
+해당 일정 앞뒤 구간을 계산하지 않고 다음 linked 일정으로 건너뛰어 연결하지 않는다. linked 상태가
+바뀌면 최신 schedule 데이터와 좌표 signature에서 marker와 route를 다시 파생한다. marker 번호는
+linked 일정끼리 재번호화하지 않는다.
+
+segment별 `AbortController`, request version/signature, 사용자 선택 version과 stale response
+검사를 유지한다. AUTO resolution은 mode별 후보를 최대 한 번만 요청해 재귀 fallback loop를 막고,
+한 segment의 결과 변경이 다른 segment를 재로딩하거나 지우지 않게 한다.
+
+iOS `react-native-maps` native crash 방어 구조는 회귀시키지 않는다. `selectedDate`와
+`renderedMapDate` 분리, native 전환 직렬화/coalescing, 마지막 pending 날짜, map generation과
+`onMapReady` gate, stale callback 무시, 날짜+schedule signature snapshot 일치 검사를 유지한다.
+Polyline에는 finite/range-valid한 2~2,000개 좌표만 전달하고 route geometry를
+`fitToCoordinates`에 섞지 않는다. viewport는 유효 marker 좌표만 사용한다.
+
+일본 노선명 localization은 원본 `transitSummary.lineNames`를 바꾸지 않고 표시 직전에만 적용한다.
+검증된 exact mapping이 없으면 억지로 번역하지 않고 NFKC 정규화 원문을 표시한다. 일반 도시철도는
+IC 운임, 신칸센 포함 경로는 `운임 약 N엔` 형식을 유지한다.
+
+장소 저장 시 `placeId`, 장소명, 위도, 경도와 주소를 가능하면 유지하고 Places API에서 받은
+좌표나 placeId를 불필요하게 버리지 않는다.
+
+향후 작업:
+
+* 일본 BUS 실제 경로 실데이터 검증
+* AUTO 추천 점수 실사용 기반 미세조정
+* trip countryCode/timezone 정식 모델
+* 복수 TRANSIT 후보 자체 최적화
+* Route/일정 순서 최적화 preview/apply
+* 영업시간, 막차, 실시간 지연 반영
 
 ---
 
@@ -485,6 +551,17 @@ Places API에서 받은 좌표나 placeId를 불필요하게 버리지 않는다
 
 예산, 지출, 정산은 tripId별 AsyncStorage에 저장되며 아직 서버 DB에 동기화하지 않는다.
 
+memberId 기반 공동 지출은 결제자를 제외한 각 `participant → payer`, 대여는
+`borrower → lender`를 `ExpenseSettlementRelation`으로 계산한다. 실제 송금 완료는 별도
+`SettlementPayment`로 저장하며, 개별 대여 완료는 `source: "loan"`, 최종 정산은
+`source: "final"`을 사용한다. `resolvedRelations`로 어떤 원본 관계가 해소됐는지 연결하므로
+최종 정산과 개별 기록의 정산 상태는 독립적이지 않다.
+
+다인원 공동 지출은 relation 단위로 미정산/일부 정산/정산 완료를 표시한다.
+정산 완료를 취소하면 해당 payment가 해결한 relation만 다시 미정산으로 계산한다.
+이름 기반 legacy payment나 대여는 source/resolvedRelations가 없을 수 있으며 기존
+`loanSettled` 호환 경로를 유지한다.
+
 사용자가 요청하지 않은 기능까지 한 번에 구현하지 않는다.
 
 ---
@@ -503,6 +580,9 @@ AsyncStorage에 유지하고 placeholder member claim으로 개발 검증한다.
 ---
 
 ## 20. AI 기능 방향
+
+현재 AI 탭은 여행/일정 미리보기, 빠른 질문, 채팅 형태 UI까지 구현된 부분 구현 상태다.
+답변은 키워드별 고정 안내 문구이며 실제 AI API, 모델 호출, 일정 자동 변경은 구현되지 않았다.
 
 향후 AI 기능으로 고려하는 항목:
 
@@ -525,31 +605,18 @@ AI를 단순 앱 로직으로 해결 가능한 모든 기능에 억지로 사용
 
 ## 21. 여행 종료 기능
 
-향후 여행이 끝났을 때:
-
-`여행 종료!`
-
-같은 흐름을 고려한다.
-
-여행 종료 후 보여줄 수 있는 정보 예:
-
-* 🇯🇵 도쿄 여행 완료
-* 여행 기간
-* 방문 장소 수
-* 총 지출
-* 가장 많이 머문 지역
-* 방문한 식당 수
-* 사진
-* 메모
-* 방문 도장 기반 통계
-
-최종 디자인은 아직 확정되지 않았다.
+여행 종료 기능은 아직 미구현이다. 향후 방향은 사용자가 회고문을 직접 작성하는 별도 기능이 아니라,
+이미 저장된 여행 기간·일정·지출·정산 등의 데이터를 이용해 자동 통계와 요약 리포트를 만드는 것이다.
+방문 도장이나 별도 방문 기록을 전제로 설계하지 않는다. 최종 통계 항목과 화면은 아직 확정되지 않았다.
 
 ---
 
 ## 22. 라이트/다크 모드 방향
 
 향후 라이트/다크 테마 모두 지원하는 방향을 고려한다.
+
+현재 navigation theme provider와 시스템 자동 테마 설정은 있지만 주요 TravelAI 화면은
+라이트 색상을 직접 사용하므로 완전한 다크 모드는 미구현이다.
 
 UI 수정 시 다음을 주의한다.
 
@@ -565,8 +632,23 @@ UI 수정 시 다음을 주의한다.
 
 ## 23. 현재 우선순위
 
-과거 우선순위였던 홈 일정 개수, 홈 날씨 연동, 지출 금액 천 단위 쉼표는 구현되어 있다.
-고정된 다음 작업을 문서만 보고 시작하지 말고 사용자의 최신 요청과 현재 저장소 상태를 먼저 확인한다.
+과거 우선순위였던 홈 일정 개수, 홈 날씨, 지출 금액 표시, WALK/TRANSIT provider 연결과
+segment AUTO 추천은 구현되어 있다. 고정된 다음 작업을 문서만 보고 시작하지 말고 사용자의 최신
+요청과 현재 저장소 상태를 먼저 확인한다.
+
+현재 남은 주요 방향:
+
+1. 일본 BUS 실데이터 검증과 AUTO 점수 실사용 기반 미세조정
+2. trip countryCode/timezone 정식 모델
+3. 복수 TRANSIT 후보 자체 최적화
+4. AUTO 이동수단 선택과 별개인 Route/일정 순서 최적화 preview/apply
+5. 실제 AI 연동
+6. 실초대·인증·멀티디바이스와 expense/settlement 서버 동기화
+7. multi-trip/history, 자동 여행 종료 통계 리포트와 offline/network robustness
+8. production backend·rate limit·quota·Cloud Run 및 EAS·TestFlight·최종 polish
+
+최적화가 기존 schedule time을 직접 바꿀지 별도 `sortOrder`를 사용할지, 결과를 preview/apply하는
+UX는 아직 결정되지 않았다. 구현 전에 설계를 확정하고 DB schema나 일정 의미를 임의로 바꾸지 않는다.
 
 ---
 
