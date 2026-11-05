@@ -2237,6 +2237,10 @@ app.post("/ai/chat", async (req, res) => {
     const history = Array.isArray(req.body?.history)
       ? req.body.history.slice(-MAX_HISTORY_MESSAGES)
       : [];
+    const responseMode =
+      req.body?.responseMode === "situation_alternatives"
+        ? "situation_alternatives"
+        : undefined;
 
     if (!tripId || tripId.length > 200) {
       return res.status(400).json({
@@ -2279,6 +2283,7 @@ app.post("/ai/chat", async (req, res) => {
       ...travelData,
       question,
       history,
+      responseMode,
       budgetSummary: req.body?.budgetSummary,
       config,
       signal: requestController.signal,
@@ -2296,6 +2301,10 @@ app.post("/ai/chat", async (req, res) => {
 
     return res.json({
       answer: result.answer,
+      responseType: result.responseType,
+      ...(result.recommendation
+        ? { recommendation: result.recommendation }
+        : {}),
       usage: result.usage,
     });
   } catch (error) {

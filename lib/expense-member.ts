@@ -1,9 +1,15 @@
 import type {
+  CurrencyCode,
   Expense,
   ExpenseSettlementRelation,
   SettlementPayment,
   Trip,
 } from "../types";
+import {
+  calculatePairwiseSettlements,
+  getExpenseShares,
+  isActiveExpense,
+} from "./expense-ledger";
 
 export type ExpenseMemberOption = {
   id: string;
@@ -22,6 +28,7 @@ export type ExpenseSettlement = {
   fromLabel: string;
   toLabel: string;
   amount: number;
+  currency: CurrencyCode;
 };
 
 export type ExpenseSettlementStatus = {
@@ -93,29 +100,26 @@ export function getExpensePartyLabel(
 export function getExpenseSettlementRelations(
   expense: Expense
 ): ExpenseSettlementRelation[] {
+  if (!isActiveExpense(expense)) {
+    return [];
+  }
+
   if (
     expense.expenseType === "shared" &&
     expense.paidByMemberId &&
     expense.participantMemberIds?.length
   ) {
-    const participants = [
-      ...new Set(expense.participantMemberIds),
-    ];
-    const share =
-      (expense.krwAmount ?? 0) / participants.length;
-
-    return participants
-      .filter(
-        (memberId) =>
-          memberId !== expense.paidByMemberId
-      )
-      .map((memberId) => ({
-        id: `shared:${expense.id}:${memberId}:${expense.paidByMemberId}`,
+    return getExpenseShares(expense)
+      .filter((share) => share.memberId !== expense.paidByMemberId)
+      .map((share) => ({
+        id: `shared:${expense.id}:${share.memberId}:${expense.paidByMemberId}`,
         expenseId: expense.id,
         kind: "shared" as const,
-        fromMemberId: memberId,
+        fromMemberId: share.memberId,
         toMemberId: expense.paidByMemberId as string,
-        amountKrw: share,
+        amountKrw: Math.round(share.amount * (expense.exchangeRate ?? 1)),
+        currency: expense.currency,
+        localAmount: share.amount,
       }));
   }
 
@@ -133,6 +137,8 @@ export function getExpenseSettlementRelations(
         fromMemberId: expense.borrowerMemberId,
         toMemberId: expense.lenderMemberId,
         amountKrw: expense.krwAmount ?? 0,
+        currency: expense.currency,
+        localAmount: expense.localAmount,
       },
     ];
   }
@@ -144,7 +150,7 @@ export function getResolvedSettlementRelationIds(
   payments: SettlementPayment[]
 ) {
   return new Set(
-    payments.flatMap((payment) =>
+    payments.filter((payment) => payment.status !== "cancelled").flatMap((payment) =>
       (payment.resolvedRelations ?? []).map(
         (relation) => relation.id
       )
@@ -189,15 +195,45 @@ export function getExpenseSettlementStatus(
 
   const resolvedIds =
     getResolvedSettlementRelationIds(payments);
-  const resolvedRelations = relations.filter(
-    (relation) => resolvedIds.has(relation.id)
-  ).length;
+  const resolvedRelations = relations.filter((relation) => {
+    if (resolvedIds.has(relation.id)) {
+      return true;
+    }
+
+    if (expense.expenseType !== "loan") {
+      return false;
+    }
+
+    const repaid = payments
+      .filter(
+        (payment) =>
+          payment.status !== "cancelled" &&
+          payment.relatedExpenseId === expense.id &&
+          payment.currency === expense.currency
+      )
+      .reduce(
+        (sum, payment) => sum + (payment.localAmount ?? 0),
+        0
+      );
+
+    return repaid >= expense.localAmount;
+  }).length;
+
+  const hasPartialLoanRepayment =
+    expense.expenseType === "loan" &&
+    payments.some(
+      (payment) =>
+        payment.status !== "cancelled" &&
+        payment.relatedExpenseId === expense.id &&
+        payment.currency === expense.currency &&
+        (payment.localAmount ?? 0) > 0
+    );
 
   return {
     totalRelations: relations.length,
     resolvedRelations,
     status:
-      resolvedRelations === 0
+      resolvedRelations === 0 && !hasPartialLoanRepayment
         ? "unsettled"
         : resolvedRelations === relations.length
           ? "settled"
@@ -236,7 +272,8 @@ export function getRelationsResolvedBySettlement(
       (relation) =>
         !resolvedIds.has(relation.id) &&
         settlementMemberIds.has(relation.fromMemberId) &&
-        settlementMemberIds.has(relation.toMemberId)
+        settlementMemberIds.has(relation.toMemberId) &&
+        (relation.currency ?? "KRW") === settlement.currency
     );
   });
 }
@@ -247,21 +284,6 @@ function memberKey(memberId: string) {
 
 function legacyKey(name: string) {
   return `${LEGACY_KEY_PREFIX}${name}`;
-}
-
-function partyKey(
-  memberId?: string,
-  legacyName?: string
-) {
-  if (memberId) {
-    return memberKey(memberId);
-  }
-
-  if (legacyName) {
-    return legacyKey(legacyName);
-  }
-
-  return null;
 }
 
 function addBalance(
@@ -300,139 +322,98 @@ export function calculateExpenseSettlements(
   payments: SettlementPayment[],
   members: ExpenseMemberOption[]
 ): ExpenseSettlement[] {
-  const balances: Record<string, number> = {};
+  const memberSettlements = calculatePairwiseSettlements(expenses, payments).map(
+    (settlement) => ({
+      fromKey: memberKey(settlement.fromMemberId),
+      toKey: memberKey(settlement.toMemberId),
+      fromMemberId: settlement.fromMemberId,
+      toMemberId: settlement.toMemberId,
+      fromLabel: getExpensePartyLabel(settlement.fromMemberId, undefined, members),
+      toLabel: getExpensePartyLabel(settlement.toMemberId, undefined, members),
+      amount: settlement.amount,
+      currency: settlement.currency,
+    })
+  );
 
-  members.forEach((member) => {
-    balances[memberKey(member.id)] = 0;
-  });
-
-  expenses.forEach((expense) => {
-    if (expense.expenseType === "shared") {
-      const payerKey = partyKey(
-        expense.paidByMemberId,
-        expense.payer
-      );
-      const participantKeys = expense.participantMemberIds
-        ? [
-            ...new Set(
-              expense.participantMemberIds.map(memberKey)
-            ),
-          ]
-        : [
-            ...new Set(
-              (expense.participants ?? []).map(legacyKey)
-            ),
-          ];
-
-      if (payerKey && participantKeys.length > 0) {
-        const share =
-          (expense.krwAmount ?? 0) /
-          participantKeys.length;
-
-        addBalance(
-          balances,
-          payerKey,
-          expense.krwAmount ?? 0
+  // 이름 기반 구형 데이터는 identity를 안전하게 추론할 수 없어 기존 KRW ledger로만 유지한다.
+  const legacyBalances: Record<string, number> = {};
+  expenses.filter(isActiveExpense).forEach((expense) => {
+    if (expense.expenseType === "shared" && !expense.paidByMemberId && expense.payer) {
+      const participants = [...new Set(expense.participants ?? [])];
+      if (participants.length > 0) {
+        addBalance(legacyBalances, legacyKey(expense.payer), expense.krwAmount ?? 0);
+        participants.forEach((name) =>
+          addBalance(legacyBalances, legacyKey(name), -(expense.krwAmount ?? 0) / participants.length)
         );
-        participantKeys.forEach((key) => {
-          addBalance(balances, key, -share);
-        });
       }
     }
 
     if (
       expense.expenseType === "loan" &&
+      !expense.lenderMemberId &&
+      !expense.borrowerMemberId &&
+      expense.lender &&
+      expense.borrower &&
       !expense.loanSettled
     ) {
-      const lenderKey = partyKey(
-        expense.lenderMemberId,
-        expense.lender
+      addBalance(
+        legacyBalances,
+        legacyKey(expense.lender),
+        expense.krwAmount ?? 0
       );
-      const borrowerKey = partyKey(
-        expense.borrowerMemberId,
-        expense.borrower
+      addBalance(
+        legacyBalances,
+        legacyKey(expense.borrower),
+        -(expense.krwAmount ?? 0)
       );
-
-      if (lenderKey && borrowerKey) {
-        addBalance(
-          balances,
-          lenderKey,
-          expense.krwAmount ?? 0
-        );
-        addBalance(
-          balances,
-          borrowerKey,
-          -(expense.krwAmount ?? 0)
-        );
-      }
     }
   });
 
-  payments.forEach((payment) => {
-    const fromKey = partyKey(
-      payment.fromMemberId,
-      payment.from
-    );
-    const toKey = partyKey(
-      payment.toMemberId,
-      payment.to
-    );
+  payments
+    .filter(
+      (payment) =>
+        payment.status !== "cancelled" &&
+        !payment.fromMemberId &&
+        !payment.toMemberId &&
+        payment.from &&
+        payment.to
+    )
+    .forEach((payment) => {
+      addBalance(legacyBalances, legacyKey(payment.from as string), payment.amountKrw);
+      addBalance(legacyBalances, legacyKey(payment.to as string), -payment.amountKrw);
+    });
 
-    if (fromKey && toKey) {
-      addBalance(balances, fromKey, payment.amountKrw);
-      addBalance(balances, toKey, -payment.amountKrw);
-    }
-  });
-
-  const creditors = Object.entries(balances)
+  const legacyCreditors = Object.entries(legacyBalances)
     .filter(([, value]) => value > 1)
-    .map(([key, value]) => ({ key, amount: value }));
-  const debtors = Object.entries(balances)
+    .map(([key, amount]) => ({ key, amount }));
+  const legacyDebtors = Object.entries(legacyBalances)
     .filter(([, value]) => value < -1)
-    .map(([key, value]) => ({ key, amount: -value }));
-  const result: ExpenseSettlement[] = [];
+    .map(([key, amount]) => ({ key, amount: -amount }));
+  const legacySettlements: ExpenseSettlement[] = [];
   let creditorIndex = 0;
   let debtorIndex = 0;
 
-  while (
-    creditorIndex < creditors.length &&
-    debtorIndex < debtors.length
-  ) {
-    const creditor = creditors[creditorIndex];
-    const debtor = debtors[debtorIndex];
-    const amount = Math.min(
-      creditor.amount,
-      debtor.amount
-    );
-
-    if (amount > 1) {
-      const from = partyFromKey(debtor.key, members);
-      const to = partyFromKey(creditor.key, members);
-
-      result.push({
-        fromKey: debtor.key,
-        toKey: creditor.key,
-        fromMemberId: from.memberId,
-        toMemberId: to.memberId,
-        fromLegacyName: from.legacyName,
-        toLegacyName: to.legacyName,
-        fromLabel: from.label,
-        toLabel: to.label,
-        amount,
-      });
-    }
-
+  while (creditorIndex < legacyCreditors.length && debtorIndex < legacyDebtors.length) {
+    const creditor = legacyCreditors[creditorIndex];
+    const debtor = legacyDebtors[debtorIndex];
+    const amount = Math.min(creditor.amount, debtor.amount);
+    const from = partyFromKey(debtor.key, members);
+    const to = partyFromKey(creditor.key, members);
+    legacySettlements.push({
+      fromKey: debtor.key,
+      toKey: creditor.key,
+      fromLegacyName: from.legacyName,
+      toLegacyName: to.legacyName,
+      fromLabel: from.label,
+      toLabel: to.label,
+      amount,
+      currency: "KRW",
+    });
     creditor.amount -= amount;
     debtor.amount -= amount;
-
-    if (creditor.amount < 1) {
-      creditorIndex += 1;
-    }
-
-    if (debtor.amount < 1) {
-      debtorIndex += 1;
-    }
+    if (creditor.amount < 1) creditorIndex += 1;
+    if (debtor.amount < 1) debtorIndex += 1;
   }
 
-  return result;
+  return [...memberSettlements, ...legacySettlements];
 }

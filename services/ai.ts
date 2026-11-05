@@ -19,8 +19,39 @@ export type AiUsage = {
   totalTokens: number;
 };
 
+export type AiResponseType =
+  | "general"
+  | "situation_alternatives";
+
+export type AiRouteVerification =
+  | "not_checked"
+  | "not_available";
+
+export type AiSituationAlternative = {
+  id: string;
+  title: string;
+  priority: number;
+  reason: string;
+  keep: string[];
+  change: string[];
+  advantages: string[];
+  disadvantages: string[];
+  routeVerification: AiRouteVerification;
+};
+
+export type AiSituationRecommendation = {
+  situationSummary: string;
+  recommendedOptionId: string;
+  recommendationReason: string;
+  alternatives: AiSituationAlternative[];
+  unverifiedInformation: string[];
+  followUpQuestions: string[];
+};
+
 export type AiChatResponse = {
   answer: string;
+  responseType: AiResponseType;
+  recommendation?: AiSituationRecommendation;
   usage: AiUsage;
 };
 
@@ -59,12 +90,59 @@ function requireApiUrl() {
   return API_URL.replace(/\/$/, "");
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === "string")
+  );
+}
+
+function isSituationRecommendation(
+  value: unknown
+): value is AiSituationRecommendation {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const recommendation = value as AiSituationRecommendation;
+
+  return (
+    typeof recommendation.situationSummary === "string" &&
+    typeof recommendation.recommendedOptionId === "string" &&
+    typeof recommendation.recommendationReason === "string" &&
+    Array.isArray(recommendation.alternatives) &&
+    recommendation.alternatives.length >= 2 &&
+    recommendation.alternatives.length <= 3 &&
+    recommendation.alternatives.every(
+      (alternative) =>
+        alternative &&
+        typeof alternative.id === "string" &&
+        typeof alternative.title === "string" &&
+        Number.isInteger(alternative.priority) &&
+        typeof alternative.reason === "string" &&
+        isStringArray(alternative.keep) &&
+        isStringArray(alternative.change) &&
+        isStringArray(alternative.advantages) &&
+        isStringArray(alternative.disadvantages) &&
+        (alternative.routeVerification === "not_checked" ||
+          alternative.routeVerification === "not_available")
+    ) &&
+    recommendation.alternatives.some(
+      (alternative) =>
+        alternative.id === recommendation.recommendedOptionId
+    ) &&
+    isStringArray(recommendation.unverifiedInformation) &&
+    isStringArray(recommendation.followUpQuestions)
+  );
+}
+
 export async function sendAiChat(
   input: {
     tripId: string;
     question: string;
     history: AiChatHistoryMessage[];
     budgetSummary: AiBudgetSummary;
+    responseMode?: AiResponseType;
   },
   signal?: AbortSignal
 ): Promise<AiChatResponse> {
@@ -85,6 +163,9 @@ export async function sendAiChat(
           -AI_MAX_HISTORY_MESSAGES
         ),
         budgetSummary: input.budgetSummary,
+        ...(input.responseMode === "situation_alternatives"
+          ? { responseMode: input.responseMode }
+          : {}),
       }),
       signal,
     });
@@ -133,8 +214,27 @@ export async function sendAiChat(
     );
   }
 
+  const responseType: AiResponseType =
+    data.responseType === "situation_alternatives"
+      ? "situation_alternatives"
+      : "general";
+
+  if (
+    responseType === "situation_alternatives" &&
+    !isSituationRecommendation(data.recommendation)
+  ) {
+    throw new AiChatError(
+      "AI 서버가 올바른 일정 대안을 반환하지 않았습니다.",
+      { code: "INVALID_RECOMMENDATION" }
+    );
+  }
+
   return {
     answer: data.answer.trim(),
+    responseType,
+    ...(responseType === "situation_alternatives"
+      ? { recommendation: data.recommendation }
+      : {}),
     usage: data.usage,
   };
 }

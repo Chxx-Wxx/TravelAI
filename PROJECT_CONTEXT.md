@@ -15,15 +15,15 @@ TravelAI는 실제 여행 중 일정, 장소, 지도, 날씨, 준비물, 예산�
 
 ### 프론트엔드
 
-* Expo SDK 57 (`expo` 57.0.20), React Native 0.86.3, React 19.2.3, TypeScript 6.0.3
-* Expo Router 57.0.19의 file-based routing
+* Expo SDK 58 (`expo` 58.0.23), React Native 0.88.1, React 19.3.0, TypeScript 6.0.3
+* Expo Router 58.0.30의 file-based routing
 * 하단 탭: 일정, 지도, 홈, 지출, AI
 * `react-native-maps` 1.27.2 기반 지도
 * `expo-location` 기반 foreground 현재 위치
 * `@react-native-async-storage/async-storage` 기반 로컬 저장
 * `@react-native-community/datetimepicker` 기반 날짜/시간 입력
 
-현재 Expo Go SDK 57을 기준으로 개발·실기기 검증한다. SDK 57 호환을 위해 React Navigation
+현재 Expo Go SDK 58을 기준으로 개발·실기기 검증한다. SDK 58 호환을 위해 React Navigation
 연동 import는 `expo-router/react-navigation`, tab 관련 type/component import는
 `expo-router/js-tabs`를 사용한다. React Compiler와 TypeScript 6에서 안전하도록 render 중 state
 변경을 피하고 타입을 좁혀 사용한다. `app.json`에는 더 이상 불필요한 `newArchEnabled`,
@@ -542,10 +542,17 @@ Open-Meteo는 프론트에서 직접 호출한다. 과거 날씨, 장기 예보 
 
 지출 탭의 구현 완료 범위:
 
+* 메인 요약과 추가/전체 내역/정산 상세/예산·환율 설정의 분리된 화면 흐름
+* 메인 예산 진행률, 오늘 지출, 통화별 내 정산과 최근 5건
+
 * 총 여행 예산, 현금 준비금, 카드 사용 예정금
 * 전체·현금·카드 잔액과 대여금을 반영한 실제 보유금
 * 오늘 지출 합계·건수, 현금/카드 구분
 * 개인 지출, 공동 지출, 대여금
+* 공동 지출 균등/직접 금액 분할과 결정적인 1원·1엔 나머지 배분
+* 결제자와 부담자의 분리, 관련 멤버만 보는 가상 멤버 시뮬레이션
+* 통화별·당사자 쌍별 자동 정산(제3자 경유 최적화 없음)
+* 대여 일부/전액 상환, 지출 수정과 취소/복구 및 최소 변경 이력
 * KRW/JPY/USD/EUR와 수동 환율
 * 기록 삭제
 * 최종 정산 계산, 완료, 완료 취소
@@ -630,9 +637,9 @@ resolvedRelations[]
 `resolvedRelations`에 있던 관계만 다시 미정산으로 계산된다. 다른 payment가 해결한 relation에는
 영향을 주지 않는다. 직접 완료한 legacy 대여는 `loanSettled`를 되돌린다.
 
-현재 정산은 전체 balance를 계산한 뒤 제안된 송금 한 건을 완결하는 방식이다. 임의 금액을 입력해
-한 relation을 여러 번 나누어 송금하는 UI는 없다. 여기서 `일부 정산`은 주로 다인원 공동 지출의
-participant→payer relation 일부가 완료된 상태를 뜻한다.
+현재 memberId 기반 정산은 거래 통화별·실제 당사자 쌍별 balance를 계산한다. 공동 지출은
+`participantShares`의 정확한 부담액을 사용하고, 대여는 여러 번의 일부 상환을 별도 payment로
+기록한다. KRW와 JPY는 환율 없이 상계하지 않고 관계없는 제3자를 경유하지 않는다.
 
 지출·정산은 tripId별 로컬 데이터이며 여러 기기 간 공유, conflict 처리, 서버 DB persistence는
 미구현이다.

@@ -89,6 +89,24 @@ export type ExpenseType =
   | "shared"
   | "loan";
 
+export type ExpenseSplitMethod =
+  | "equal"
+  | "custom";
+
+export interface ExpenseParticipantShare {
+  memberId: string;
+  // 거래 통화의 최소 정수 단위(KRW 1원, JPY 1엔)
+  amount: number;
+}
+
+export interface ExpenseChangeRecord {
+  id: string;
+  changedAt: string;
+  changedByMemberId?: string;
+  action: "created" | "updated" | "cancelled" | "restored";
+  summary: string;
+}
+
 export type PaymentMethod =
   | "cash"
   | "card";
@@ -110,12 +128,17 @@ export interface Expense {
 
   expenseType?: ExpenseType;
 
+  // 개인 지출의 열람자/부담자. 구형 기록에는 없을 수 있다.
+  ownerMemberId?: string;
+
   // 실제 어떤 수단으로 지불했는지
   paymentMethod?: PaymentMethod;
 
   // 공동 지출
   paidByMemberId?: string;
   participantMemberIds?: string[];
+  splitMethod?: ExpenseSplitMethod;
+  participantShares?: ExpenseParticipantShare[];
 
   // 이름 기반 구형 로컬 데이터 호환용
   payer?: string;
@@ -132,6 +155,16 @@ export interface Expense {
   // 대여금 개별 정산 상태
   loanSettled?: boolean;
   loanSettledAt?: string;
+
+  // 새 기록은 삭제 대신 취소하여 복구할 수 있다.
+  status?: "active" | "cancelled";
+  createdAt?: string;
+  updatedAt?: string;
+  cancelledAt?: string;
+  createdByMemberId?: string;
+  updatedByMemberId?: string;
+  idempotencyKey?: string;
+  changeHistory?: ExpenseChangeRecord[];
 }
 
 export interface ExpenseSettings {
@@ -161,6 +194,8 @@ export interface ExpenseSettlementRelation {
   fromMemberId: string;
   toMemberId: string;
   amountKrw: number;
+  currency?: CurrencyCode;
+  localAmount?: number;
 }
 
 export interface SettlementPayment {
@@ -176,6 +211,10 @@ export interface SettlementPayment {
   to?: string;
 
   amountKrw: number;
+  currency?: CurrencyCode;
+  localAmount?: number;
+  relatedExpenseId?: string;
+  status?: "active" | "cancelled";
 
   date: string;
 

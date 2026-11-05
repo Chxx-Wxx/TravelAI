@@ -57,11 +57,11 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 
 현재 프로젝트는 다음 기술을 사용한다.
 
-* React Native 0.86.3
-* Expo SDK 57 (`expo` 57.0.20)
-* React 19.2.3
+* React Native 0.88.1
+* Expo SDK 58 (`expo` 58.0.23)
+* React 19.3.0
 * TypeScript 6.0.3
-* Expo Router 57.0.19 기반 구조
+* Expo Router 58.0.30 기반 구조
 * AsyncStorage
 * expo-location
 * Node.js
@@ -70,7 +70,7 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 * dotenv
 * cors
 * Google Places API (New)
-* react-native-maps 1.27.2
+* react-native-maps 1.29.11
 * Google Routes API (WALK, 비일본 TRANSIT)
 * NAVITIME Route(totalnavi) via RapidAPI (일본 TRANSIT)
 * Open-Meteo Geocoding / Forecast API
@@ -79,7 +79,7 @@ TravelAI는 실제 일본 여행에서 사용할 개인용 여행 비서 앱을 
 
 저장소 코드에서 변경된 사실이 확인되지 않는 이상 위 구조를 기준으로 한다.
 
-현재 Expo Go SDK 57을 기준으로 개발한다. SDK 57 호환을 위해 적용된
+현재 Expo Go SDK 58을 기준으로 개발한다. SDK 58 호환을 위해 적용된
 `expo-router/react-navigation`, `expo-router/js-tabs` import를 과거 직접
 `@react-navigation/*` import로 되돌리지 않는다. React Compiler/TypeScript 6 호환 수정과
 `app.json`에서 제거된 `newArchEnabled`, `android.edgeToEdgeEnabled`도 실제 문제 근거 없이
@@ -545,11 +545,22 @@ IC 운임, 신칸센 포함 경로는 `운임 약 N엔` 형식을 유지한다.
 개인/공동 지출, 대여금, 최종 정산과 완료 취소가 구현되어 있다.
 금액 출력과 여행 자금 입력에는 천 단위 쉼표가 적용된다.
 
+지출 하단 탭의 기본 화면은 예산 진행, 오늘 지출, 내 정산, 최근 5건만 보여준다. 같은 탭 안에서
+`추가`, `전체 내역`, `정산 상세`, `예산·환율 설정` 보기로 전환하며, 긴 입력 폼과 설정을 메인에
+펼치지 않는다. 새 지출은 공동 지출이 기본이고 직접 금액 지정은 고급 옵션에서 연다.
+
+공동 지출은 `participantShares`에 거래 통화의 정수 최소 단위로 부담액을 저장한다. 균등 분할은
+선택된 멤버 순서대로 나머지 1원/1엔을 결정적으로 배분하고 직접 금액 지정은 합계가 총액과 정확히
+같아야 한다. 정산은 통화별·당사자 쌍별로만 상계하며 제3자를 경유하는 송금 최적화는 하지 않는다.
+가상 멤버 전환은 관련자 열람 UI를 검증하기 위한 로컬 개발 시뮬레이션일 뿐 서버 인증이 아니다.
+지출 취소/복구와 최소 변경 기록, 대여 일부 상환 기록이 로컬 데이터에 구현되어 있다.
+
 새 지출/정산 데이터는 이름이 아니라 `tripMemberId`를 기준으로 결제자, 참여자,
 대여자, 차용자와 송금 방향을 구분한다. `currentMemberId`로 UI의 `나`를 판단한다.
 이름 기반 legacy 데이터는 호환 읽기를 유지하되 임의로 memberId에 귀속시키지 않는다.
 
 예산, 지출, 정산은 tripId별 AsyncStorage에 저장되며 아직 서버 DB에 동기화하지 않는다.
+인증이 없는 현재 단계에서는 요청의 memberId만 신뢰하는 비공개 지출 API를 만들지 않는다.
 
 memberId 기반 공동 지출은 결제자를 제외한 각 `participant → payer`, 대여는
 `borrower → lender`를 `ExpenseSettlementRelation`으로 계산한다. 실제 송금 완료는 별도

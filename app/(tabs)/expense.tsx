@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useMemo,
   useRef,
@@ -17,7 +18,6 @@ import {
 import { useFocusEffect } from "expo-router";
 
 import {
-  deleteExpense,
   deleteSettlementPayment,
   getExpenseSettings,
   getExpenses,
@@ -38,6 +38,16 @@ import {
   getResolvedSettlementRelationIds,
   type ExpenseSettlement,
 } from "../../lib/expense-member";
+import {
+  allocateEqualShares,
+  appendExpenseIdempotently,
+  canMemberViewExpense,
+  getExpenseShares,
+  getMemberLedgerSummary,
+  isActiveExpense,
+  isPositiveIntegerAmount,
+  validateCustomShares,
+} from "../../lib/expense-ledger";
 
 import {
   getCurrentTripWithRecovery,
@@ -48,6 +58,7 @@ import {
   Expense,
   ExpenseCategory,
   ExpenseSettings,
+  ExpenseSplitMethod,
   ExpenseType,
   PaymentMethod,
   SettlementPayment,
@@ -85,6 +96,16 @@ type ExpenseWithSnapshot =
     exchangeRate: number;
     krwAmount: number;
   };
+
+type ExpenseViewMode =
+  | "main"
+  | "add"
+  | "history"
+  | "settlement"
+  | "settings";
+
+type ExpenseHistoryTypeFilter = "all" | ExpenseType;
+type ExpenseHistoryCurrencyFilter = "all" | "JPY" | "KRW";
 
 function formatNumericInput(
   value: string,
@@ -368,8 +389,17 @@ async function getExpensesWithSnapshots(
 }
 
 export default function ExpenseScreen() {
+  const [viewMode, setViewMode] =
+    useState<ExpenseViewMode>("main");
+  const [historyTypeFilter, setHistoryTypeFilter] =
+    useState<ExpenseHistoryTypeFilter>("all");
+  const [historyCurrencyFilter, setHistoryCurrencyFilter] =
+    useState<ExpenseHistoryCurrencyFilter>("all");
   const [trip, setTrip] =
     useState<Trip | null>(null);
+
+  const [expenseSettingsConfigured, setExpenseSettingsConfigured] =
+    useState(false);
 
   const [currentUserId, setCurrentUserId] =
     useState<string | null>(null);
@@ -464,10 +494,12 @@ export default function ExpenseScreen() {
     expenseType,
     setExpenseType,
   ] = useState<ExpenseType>(
-    "personal"
+    "shared"
   );
 
   const [payerMemberId, setPayerMemberId] =
+    useState("");
+  const [personalOwnerMemberId, setPersonalOwnerMemberId] =
     useState("");
 
   const [
@@ -480,6 +512,18 @@ export default function ExpenseScreen() {
 
   const [borrowerMemberId, setBorrowerMemberId] =
     useState("");
+
+  const [viewingMemberId, setViewingMemberId] = useState("");
+  const [splitMethod, setSplitMethod] =
+    useState<ExpenseSplitMethod>("equal");
+  const [customShareInputs, setCustomShareInputs] =
+    useState<Record<string, string>>({});
+  const [editingExpenseId, setEditingExpenseId] =
+    useState<string | null>(null);
+  const [repaymentInputs, setRepaymentInputs] =
+    useState<Record<string, string>>({});
+  const [showAdvancedExpenseOptions, setShowAdvancedExpenseOptions] =
+    useState(false);
 
   const memberOptions =
     useMemo(() => {
@@ -515,6 +559,10 @@ export default function ExpenseScreen() {
   );
 
   const currentMemberId = currentMember?.id ?? null;
+  const effectiveMemberId =
+    viewingMemberId && memberIds.includes(viewingMemberId)
+      ? viewingMemberId
+      : currentMemberId;
 
   // 구형 이름 기반 대여금은 이름이 유일할 때만 현재 사용자와 연결해
   // 표시한다. 저장 데이터 자체를 memberId로 변환하지 않는다.
@@ -591,6 +639,8 @@ export default function ExpenseScreen() {
       const savedSettings =
         await getExpenseSettings();
 
+      setExpenseSettingsConfigured(Boolean(savedSettings));
+
       const effectiveRates:
         ExchangeRates = {
           ...defaultRates,
@@ -637,10 +687,18 @@ export default function ExpenseScreen() {
       const defaultMemberId =
         me || memberIds[0] || "";
 
+      setViewingMemberId((current) =>
+        memberIds.includes(current) ? current : defaultMemberId
+      );
+
       setPayerMemberId((current) =>
         memberIds.includes(current)
           ? current
           : defaultMemberId
+      );
+
+      setPersonalOwnerMemberId((current) =>
+        memberIds.includes(current) ? current : defaultMemberId
       );
 
       setLenderMemberId((current) =>
@@ -675,7 +733,9 @@ export default function ExpenseScreen() {
 
           return valid.length > 0
             ? valid
-            : memberIds;
+            : defaultMemberId
+              ? [defaultMemberId]
+              : [];
         }
       );
 
@@ -750,6 +810,7 @@ export default function ExpenseScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      setViewMode("main");
       loadData();
     }, [loadData])
   );
@@ -812,10 +873,68 @@ export default function ExpenseScreen() {
       cardBudget
     );
 
+  const activeExpenses = useMemo(
+    () => expenses.filter(isActiveExpense),
+    [expenses]
+  );
+
+  const visibleActiveExpenses = useMemo(
+    () =>
+      activeExpenses.filter((expense) =>
+        canMemberViewExpense(expense, effectiveMemberId)
+      ),
+    [activeExpenses, effectiveMemberId]
+  );
+
+  const cancelledExpenses = useMemo(
+    () =>
+      expenses.filter(
+        (expense) =>
+          !isActiveExpense(expense) &&
+          canMemberViewExpense(expense, effectiveMemberId)
+      ),
+    [expenses, effectiveMemberId]
+  );
+
+  const memberLedgerSummary = useMemo(
+    () =>
+      effectiveMemberId
+        ? getMemberLedgerSummary(
+            activeExpenses,
+            settlementPayments,
+            effectiveMemberId
+          )
+        : null,
+    [activeExpenses, settlementPayments, effectiveMemberId]
+  );
+
+  const filteredHistoryExpenses = useMemo(
+    () =>
+      visibleActiveExpenses.filter(
+        (expense) =>
+          (historyTypeFilter === "all" ||
+            (expense.expenseType ?? "personal") === historyTypeFilter) &&
+          (historyCurrencyFilter === "all" ||
+            expense.currency === historyCurrencyFilter)
+      ),
+    [visibleActiveExpenses, historyTypeFilter, historyCurrencyFilter]
+  );
+
+  const recentExpenses = useMemo(
+    () => visibleActiveExpenses.slice(0, 5),
+    [visibleActiveExpenses]
+  );
+
+  const visibleLoanExpenses = useMemo(
+    () =>
+      visibleActiveExpenses.filter((expense) => expense.expenseType === "loan"),
+    [visibleActiveExpenses]
+  );
+
   // 일반 여행 지출
   const totalExpenseKrw =
     useMemo(() => {
-      return expenses.reduce(
+      return activeExpenses.reduce(
         (sum, expense) => {
           if (
             expense.expenseType ===
@@ -832,7 +951,7 @@ export default function ExpenseScreen() {
         },
         0
       );
-    }, [expenses]);
+    }, [activeExpenses]);
 
   // 오늘 사용한 일반 여행 지출
   // 대여금은 실제 소비가 아니므로 오늘 지출에서 제외
@@ -841,14 +960,14 @@ export default function ExpenseScreen() {
       const today =
         getTodayString();
 
-      return expenses.filter(
+      return visibleActiveExpenses.filter(
         (expense) =>
           expense.date ===
             today &&
           expense.expenseType !==
             "loan"
       );
-    }, [expenses]);
+    }, [visibleActiveExpenses]);
 
   const todayExpenseKrw =
     useMemo(() => {
@@ -905,7 +1024,7 @@ export default function ExpenseScreen() {
 
   const cashExpenseKrw =
     useMemo(() => {
-      return expenses.reduce(
+      return activeExpenses.reduce(
         (sum, expense) => {
           if (
             expense.expenseType ===
@@ -929,11 +1048,11 @@ export default function ExpenseScreen() {
         },
         0
       );
-    }, [expenses]);
+    }, [activeExpenses]);
 
   const cardExpenseKrw =
     useMemo(() => {
-      return expenses.reduce(
+      return activeExpenses.reduce(
         (sum, expense) => {
           if (
             expense.expenseType ===
@@ -957,7 +1076,7 @@ export default function ExpenseScreen() {
         },
         0
       );
-    }, [expenses]);
+    }, [activeExpenses]);
 
   const remaining =
     budgetNumber -
@@ -980,7 +1099,7 @@ export default function ExpenseScreen() {
       let lentCash = 0;
       let lentCard = 0;
 
-      expenses.forEach(
+      activeExpenses.forEach(
         (expense) => {
           if (
             expense.expenseType !==
@@ -1000,8 +1119,20 @@ export default function ExpenseScreen() {
             return;
           }
 
-          const value =
-            expense.krwAmount ?? 0;
+          const repaidKrw = settlementPayments
+            .filter(
+              (payment) =>
+                payment.status !== "cancelled" &&
+                payment.relatedExpenseId === expense.id
+            )
+            .reduce(
+              (sum, payment) => sum + (payment.amountKrw ?? 0),
+              0
+            );
+          const value = Math.max(
+            0,
+            (expense.krwAmount ?? 0) - repaidKrw
+          );
 
           const method =
             expense.paymentMethod ??
@@ -1011,7 +1142,7 @@ export default function ExpenseScreen() {
           if (
             expense.lenderMemberId
               ? expense.lenderMemberId ===
-                currentMemberId
+                effectiveMemberId
               : Boolean(
                   legacyCurrentUserName &&
                     expense.lender ===
@@ -1031,7 +1162,7 @@ export default function ExpenseScreen() {
           if (
             expense.borrowerMemberId
               ? expense.borrowerMemberId ===
-                currentMemberId
+                effectiveMemberId
               : Boolean(
                   legacyCurrentUserName &&
                     expense.borrower ===
@@ -1067,8 +1198,8 @@ export default function ExpenseScreen() {
           lentCard,
       };
     }, [
-      expenses,
-      currentMemberId,
+      activeExpenses,
+      effectiveMemberId,
       legacyCurrentUserName,
       settlementPayments,
     ]);
@@ -1116,6 +1247,7 @@ export default function ExpenseScreen() {
     await saveExpenseSettings(
       settings
     );
+    setExpenseSettingsConfigured(true);
   }
 
   async function handleBudgetSave() {
@@ -1330,13 +1462,64 @@ export default function ExpenseScreen() {
 
     if (
       !localAmount ||
-      localAmount <= 0
+      localAmount <= 0 ||
+      ((currency === "JPY" || currency === "KRW") &&
+        !isPositiveIntegerAmount(localAmount))
     ) {
       Alert.alert(
         "금액 확인",
         "올바른 금액을 입력해주세요."
       );
 
+      return;
+    }
+
+    if (
+      expenseType !== "personal" &&
+      !isPositiveIntegerAmount(localAmount)
+    ) {
+      Alert.alert(
+        "정산 금액 확인",
+        "공동 지출과 대여는 선택한 통화의 1단위 정수 금액으로 입력해주세요."
+      );
+      return;
+    }
+
+    if (currency !== "KRW" && !expenseSettingsConfigured) {
+      Alert.alert(
+        "환율 설정 필요",
+        "외화 지출을 원화 예산에 반영하려면 먼저 예산·환율 설정에서 적용 환율을 저장해주세요.",
+        [
+          { text: "취소", style: "cancel" },
+          { text: "설정으로 이동", onPress: () => setViewMode("settings") },
+        ]
+      );
+      return;
+    }
+
+    const participantShares =
+      expenseType === "shared" && participantMemberIds.length > 0
+        ? splitMethod === "equal"
+          ? allocateEqualShares(localAmount, participantMemberIds)
+          : participantMemberIds.map((memberId) => ({
+              memberId,
+              amount: parseNumericInput(customShareInputs[memberId] ?? ""),
+            }))
+        : undefined;
+
+    if (
+      expenseType === "shared" &&
+      splitMethod === "custom" &&
+      !validateCustomShares(
+        localAmount,
+        participantMemberIds,
+        participantShares ?? []
+      )
+    ) {
+      Alert.alert(
+        "직접 분할 확인",
+        "각 부담자의 금액을 1엔/1원 단위로 입력하고 합계를 총액과 같게 맞춰주세요."
+      );
       return;
     }
 
@@ -1379,6 +1562,14 @@ export default function ExpenseScreen() {
     }
 
     if (
+      expenseType === "personal" &&
+      (!personalOwnerMemberId || !memberIds.includes(personalOwnerMemberId))
+    ) {
+      Alert.alert("소유자 확인", "개인 지출의 소유자를 선택해주세요.");
+      return;
+    }
+
+    if (
       expenseType === "loan" &&
       (
         !lenderMemberId ||
@@ -1412,11 +1603,16 @@ export default function ExpenseScreen() {
         localAmount * rate
       );
 
+    const now = new Date().toISOString();
+    const existingExpense = editingExpenseId
+      ? expenses.find((item) => item.id === editingExpenseId)
+      : undefined;
+    const expenseId = existingExpense?.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const newExpense:
       ExpenseWithSnapshot =
       {
-        id:
-          Date.now().toString(),
+        ...(existingExpense ?? {}),
+        id: expenseId,
 
         localAmount,
 
@@ -1437,6 +1633,11 @@ export default function ExpenseScreen() {
 
         expenseType,
 
+        ownerMemberId:
+          expenseType === "personal"
+            ? personalOwnerMemberId
+            : undefined,
+
         paymentMethod,
 
         paidByMemberId:
@@ -1450,6 +1651,12 @@ export default function ExpenseScreen() {
           "shared"
             ? participantMemberIds
             : undefined,
+
+        splitMethod:
+          expenseType === "shared" ? splitMethod : undefined,
+
+        participantShares:
+          expenseType === "shared" ? participantShares : undefined,
 
         lenderMemberId:
           expenseType ===
@@ -1470,7 +1677,26 @@ export default function ExpenseScreen() {
             : undefined,
 
         loanSettledAt:
-          undefined,
+          existingExpense?.loanSettledAt,
+
+        status: "active",
+        createdAt: existingExpense?.createdAt ?? now,
+        updatedAt: now,
+        createdByMemberId:
+          existingExpense?.createdByMemberId ?? effectiveMemberId ?? undefined,
+        updatedByMemberId: effectiveMemberId ?? undefined,
+        idempotencyKey:
+          existingExpense?.idempotencyKey ?? expenseId,
+        changeHistory: [
+          ...(existingExpense?.changeHistory ?? []),
+          {
+            id: `${expenseId}:${now}`,
+            changedAt: now,
+            changedByMemberId: effectiveMemberId ?? undefined,
+            action: existingExpense ? "updated" : "created",
+            summary: existingExpense ? "지출 내용을 수정함" : "지출을 생성함",
+          },
+        ],
       };
 
     if (expenseSaveLockRef.current) {
@@ -1484,15 +1710,21 @@ export default function ExpenseScreen() {
       const current =
         await getExpenses();
 
-      await saveExpenses([
-        ...current,
-        newExpense,
-      ]);
+      const updated = existingExpense
+        ? current.map((item) => (item.id === existingExpense.id ? newExpense : item))
+        : appendExpenseIdempotently(current, newExpense);
+
+      await saveExpenses(updated);
 
       setAmount("");
       setMemo("");
+      setEditingExpenseId(null);
+      setSplitMethod("equal");
+      setCustomShareInputs({});
+      setShowAdvancedExpenseOptions(false);
 
       await loadData();
+      setViewMode("main");
     } finally {
       expenseSaveLockRef.current = false;
       setSavingExpense(false);
@@ -1504,7 +1736,7 @@ export default function ExpenseScreen() {
   ) {
     Alert.alert(
       "기록 삭제",
-      "이 기록을 삭제할까요?",
+      "이 기록을 취소할까요? 취소된 기록은 아래에서 복구할 수 있습니다.",
       [
         {
           text: "취소",
@@ -1512,14 +1744,36 @@ export default function ExpenseScreen() {
         },
 
         {
-          text: "삭제",
+          text: "기록 취소",
           style:
             "destructive",
 
           onPress:
             async () => {
-              await deleteExpense(
-                expense.id
+              const now = new Date().toISOString();
+              const current = await getExpenses();
+              await saveExpenses(
+                current.map((item) =>
+                  item.id === expense.id
+                    ? {
+                        ...item,
+                        status: "cancelled" as const,
+                        cancelledAt: now,
+                        updatedAt: now,
+                        updatedByMemberId: effectiveMemberId ?? undefined,
+                        changeHistory: [
+                          ...(item.changeHistory ?? []),
+                          {
+                            id: `${item.id}:${now}`,
+                            changedAt: now,
+                            changedByMemberId: effectiveMemberId ?? undefined,
+                            action: "cancelled" as const,
+                            summary: "지출 기록을 취소함",
+                          },
+                        ],
+                      }
+                    : item
+                )
               );
 
               await loadData();
@@ -1527,6 +1781,88 @@ export default function ExpenseScreen() {
         },
       ]
     );
+  }
+
+  function beginEditExpense(expense: ExpenseWithSnapshot) {
+    setViewMode("add");
+    setEditingExpenseId(expense.id);
+    setAmount(formatNumericInput(String(expense.localAmount), true));
+    setMemo(expense.memo ?? "");
+    setCategory(expense.category);
+    setCurrency(expense.currency);
+    setRateInput(
+      getRateDisplayValue(expense.currency, {
+        ...exchangeRates,
+        [expense.currency]: expense.exchangeRate,
+      })
+    );
+    setPaymentMethod(expense.paymentMethod ?? "cash");
+    setExpenseType(expense.expenseType ?? "personal");
+    setPayerMemberId(expense.paidByMemberId ?? effectiveMemberId ?? "");
+    setPersonalOwnerMemberId(
+      expense.ownerMemberId ?? effectiveMemberId ?? ""
+    );
+    setParticipantMemberIds(expense.participantMemberIds ?? []);
+    setLenderMemberId(expense.lenderMemberId ?? effectiveMemberId ?? "");
+    setBorrowerMemberId(expense.borrowerMemberId ?? "");
+    setSplitMethod(expense.splitMethod ?? "equal");
+    setShowAdvancedExpenseOptions(
+      expense.splitMethod === "custom" || Boolean(expense.memo?.trim())
+    );
+    setCustomShareInputs(
+      Object.fromEntries(
+        getExpenseShares(expense).map((share) => [
+          share.memberId,
+          formatNumericInput(String(share.amount)),
+        ])
+      )
+    );
+  }
+
+  function openNewExpense() {
+    setEditingExpenseId(null);
+    setExpenseType("shared");
+    setAmount("");
+    setMemo("");
+    setCategory("식비");
+    setPersonalOwnerMemberId(effectiveMemberId ?? memberIds[0] ?? "");
+    setPaymentMethod("cash");
+    setSplitMethod("equal");
+    setCustomShareInputs({});
+    setShowAdvancedExpenseOptions(false);
+    setParticipantMemberIds(
+      payerMemberId ? [payerMemberId] : memberIds.slice(0, 1)
+    );
+    setViewMode("add");
+  }
+
+  async function restoreExpense(expense: Expense) {
+    const now = new Date().toISOString();
+    const current = await getExpenses();
+    await saveExpenses(
+      current.map((item) =>
+        item.id === expense.id
+          ? {
+              ...item,
+              status: "active" as const,
+              cancelledAt: undefined,
+              updatedAt: now,
+              updatedByMemberId: effectiveMemberId ?? undefined,
+              changeHistory: [
+                ...(item.changeHistory ?? []),
+                {
+                  id: `${item.id}:${now}`,
+                  changedAt: now,
+                  changedByMemberId: effectiveMemberId ?? undefined,
+                  action: "restored" as const,
+                  summary: "취소한 지출 기록을 복구함",
+                },
+              ],
+            }
+          : item
+      )
+    );
+    await loadData();
   }
 
   function toggleLoanSettlement(
@@ -1551,6 +1887,18 @@ export default function ExpenseScreen() {
     );
     const relation =
       getExpenseSettlementRelations(expense)[0];
+    const repaidLocalAmount = settlementPayments
+      .filter(
+        (payment) =>
+          payment.status !== "cancelled" &&
+          payment.relatedExpenseId === expense.id &&
+          payment.currency === expense.currency
+      )
+      .reduce((sum, payment) => sum + (payment.localAmount ?? 0), 0);
+    const remainingLocalAmount = Math.max(
+      0,
+      expense.localAmount - repaidLocalAmount
+    );
     const relationPayment = relation
       ? settlementPayments.find((payment) =>
           payment.resolvedRelations?.some(
@@ -1592,8 +1940,10 @@ export default function ExpenseScreen() {
           : "정산 완료 취소",
 
         isCompleting
-          ? `${borrowerLabel} → ${lenderLabel}\n₩${formatMoney(
-              expense.krwAmount
+          ? `${borrowerLabel} → ${lenderLabel}\n${currencySymbol(
+              expense.currency
+            )}${formatMoney(
+              remainingLocalAmount
             )}\n\n실제로 갚은 것이 맞나요?`
           : "이 대여금을 다시 미정산 상태로 바꿀까요?",
 
@@ -1643,7 +1993,12 @@ export default function ExpenseScreen() {
                       source: "loan",
                       fromMemberId: relation.fromMemberId,
                       toMemberId: relation.toMemberId,
-                      amountKrw: relation.amountKrw,
+                      amountKrw: Math.round(
+                        remainingLocalAmount * expense.exchangeRate
+                      ),
+                      currency: expense.currency,
+                      localAmount: remainingLocalAmount,
+                      relatedExpenseId: expense.id,
                       date: getTodayString(),
                       resolvedRelations: [relation],
                     };
@@ -1689,6 +2044,58 @@ export default function ExpenseScreen() {
     }
   }
 
+  async function addLoanRepayment(expense: ExpenseWithSnapshot) {
+    if (
+      expense.expenseType !== "loan" ||
+      !expense.borrowerMemberId ||
+      !expense.lenderMemberId
+    ) {
+      return;
+    }
+
+    const repaymentAmount = parseNumericInput(repaymentInputs[expense.id] ?? "");
+    const alreadyRepaid = settlementPayments
+      .filter(
+        (payment) =>
+          payment.status !== "cancelled" &&
+          payment.relatedExpenseId === expense.id &&
+          payment.currency === expense.currency
+      )
+      .reduce((sum, payment) => sum + (payment.localAmount ?? 0), 0);
+    const remainingAmount = Math.max(0, expense.localAmount - alreadyRepaid);
+
+    if (
+      !isPositiveIntegerAmount(repaymentAmount) ||
+      repaymentAmount > remainingAmount
+    ) {
+      Alert.alert(
+        "상환 금액 확인",
+        `1${expense.currency === "JPY" ? "엔" : "원"} 단위로 남은 금액 이하를 입력해주세요.\n남은 금액: ${currencySymbol(expense.currency)}${formatMoney(remainingAmount)}`
+      );
+      return;
+    }
+
+    const relation = getExpenseSettlementRelations(expense)[0];
+    const completesLoan = repaymentAmount === remainingAmount;
+    const payment: SettlementPayment = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      source: "loan",
+      fromMemberId: expense.borrowerMemberId,
+      toMemberId: expense.lenderMemberId,
+      currency: expense.currency,
+      localAmount: repaymentAmount,
+      amountKrw: Math.round(repaymentAmount * expense.exchangeRate),
+      relatedExpenseId: expense.id,
+      date: getTodayString(),
+      resolvedRelations: completesLoan && relation ? [relation] : undefined,
+    };
+
+    const current = await getSettlementPayments();
+    await saveSettlementPayments([...current, payment]);
+    setRepaymentInputs((values) => ({ ...values, [expense.id]: "" }));
+    await loadData();
+  }
+
   function rateLabel() {
     if (
       currency === "JPY"
@@ -1716,12 +2123,36 @@ export default function ExpenseScreen() {
     useMemo(
       () =>
         calculateExpenseSettlements(
-          expenses,
+          activeExpenses,
           settlementPayments,
           memberDisplayOptions
         ),
-      [expenses, settlementPayments, memberDisplayOptions]
+      [activeExpenses, settlementPayments, memberDisplayOptions]
     );
+
+  const visibleSettlements = useMemo(
+    () =>
+      settlements.filter(
+        (settlement) =>
+          settlement.fromMemberId === effectiveMemberId ||
+          settlement.toMemberId === effectiveMemberId ||
+          (!settlement.fromMemberId && !settlement.toMemberId)
+      ),
+    [settlements, effectiveMemberId]
+  );
+
+  const visibleSettlementPayments = useMemo(
+    () =>
+      settlementPayments.filter(
+        (payment) =>
+          payment.status !== "cancelled" &&
+          (!effectiveMemberId ||
+            payment.fromMemberId === effectiveMemberId ||
+            payment.toMemberId === effectiveMemberId ||
+            (!payment.fromMemberId && !payment.toMemberId))
+      ),
+    [settlementPayments, effectiveMemberId]
+  );
 
   const resolvedSettlementRelationIds = useMemo(
     () =>
@@ -1732,7 +2163,7 @@ export default function ExpenseScreen() {
   );
 
   const currentSettlementBreakdown = useMemo(() => {
-    if (!currentMemberId) {
+    if (!effectiveMemberId) {
       return null;
     }
 
@@ -1740,25 +2171,24 @@ export default function ExpenseScreen() {
     let loanBalance = 0;
     let completedPaymentBalance = 0;
 
-    expenses.forEach((expense) => {
+    activeExpenses.forEach((expense) => {
       if (
         expense.expenseType === "shared" &&
         expense.paidByMemberId &&
         expense.participantMemberIds?.length
       ) {
-        const uniqueParticipants = [
-          ...new Set(expense.participantMemberIds),
-        ];
-        const share =
-          expense.krwAmount /
-          uniqueParticipants.length;
+        const ownShare = getExpenseShares(expense).find(
+          (share) => share.memberId === effectiveMemberId
+        );
 
-        if (expense.paidByMemberId === currentMemberId) {
+        if (expense.paidByMemberId === effectiveMemberId) {
           sharedBalance += expense.krwAmount;
         }
 
-        if (uniqueParticipants.includes(currentMemberId)) {
-          sharedBalance -= share;
+        if (ownShare) {
+          sharedBalance -= Math.round(
+            ownShare.amount * expense.exchangeRate
+          );
         }
       }
 
@@ -1766,22 +2196,25 @@ export default function ExpenseScreen() {
         expense.expenseType === "loan" &&
         !expense.loanSettled
       ) {
-        if (expense.lenderMemberId === currentMemberId) {
+        if (expense.lenderMemberId === effectiveMemberId) {
           loanBalance += expense.krwAmount;
         }
 
-        if (expense.borrowerMemberId === currentMemberId) {
+        if (expense.borrowerMemberId === effectiveMemberId) {
           loanBalance -= expense.krwAmount;
         }
       }
     });
 
     settlementPayments.forEach((payment) => {
-      if (payment.fromMemberId === currentMemberId) {
+      if (payment.status === "cancelled") {
+        return;
+      }
+      if (payment.fromMemberId === effectiveMemberId) {
         completedPaymentBalance += payment.amountKrw;
       }
 
-      if (payment.toMemberId === currentMemberId) {
+      if (payment.toMemberId === effectiveMemberId) {
         completedPaymentBalance -= payment.amountKrw;
       }
     });
@@ -1796,22 +2229,22 @@ export default function ExpenseScreen() {
         completedPaymentBalance,
     };
   }, [
-    currentMemberId,
-    expenses,
+    effectiveMemberId,
+    activeExpenses,
     settlementPayments,
   ]);
 
   const currentSettlementCount = settlements.filter(
     (settlement) =>
-      settlement.fromMemberId === currentMemberId ||
-      settlement.toMemberId === currentMemberId
+      settlement.fromMemberId === effectiveMemberId ||
+      settlement.toMemberId === effectiveMemberId
   ).length;
 
   function completeSettlement(
     settlement: ExpenseSettlement
   ) {
     const actionKey =
-      `final:${settlement.fromKey}:${settlement.toKey}`;
+      `final:${settlement.currency}:${settlement.fromKey}:${settlement.toKey}`;
 
     if (!beginSettlementMutation(actionKey)) {
       return;
@@ -1820,7 +2253,7 @@ export default function ExpenseScreen() {
     try {
       Alert.alert(
         "정산 완료",
-        `${settlement.fromLabel} → ${settlement.toLabel}\n₩${formatMoney(
+        `${settlement.fromLabel} → ${settlement.toLabel}\n${currencySymbol(settlement.currency)}${formatMoney(
           settlement.amount
         )}\n\n실제로 송금이 완료됐나요?`,
         [
@@ -1865,7 +2298,16 @@ export default function ExpenseScreen() {
                         settlement.toLegacyName,
 
                       amountKrw:
-                        settlement.amount,
+                        Math.round(
+                          settlement.amount *
+                            (settlement.currency === "KRW"
+                              ? 1
+                              : exchangeRates[settlement.currency])
+                        ),
+
+                      currency: settlement.currency,
+
+                      localAmount: settlement.amount,
 
                       date:
                         getTodayString(),
@@ -2004,6 +2446,7 @@ export default function ExpenseScreen() {
     settlement: ExpenseSettlement
   ) {
     if (
+      settlement.currency !== "KRW" ||
       !currentSettlementBreakdown ||
       currentSettlementCount !== 1
     ) {
@@ -2069,15 +2512,65 @@ export default function ExpenseScreen() {
         paddingBottom: 120,
       }}
     >
-      <Text
-        style={{
-          fontSize: 32,
-          fontWeight: "bold",
-          color: "#111827",
-        }}
-      >
-        지출
-      </Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        {viewMode !== "main" ? (
+          <Pressable
+            onPress={() => setViewMode("main")}
+            accessibilityRole="button"
+            accessibilityLabel="지출 메인으로 돌아가기"
+            style={{
+              width: 42,
+              height: 42,
+              borderRadius: 21,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: "white",
+              borderWidth: 1,
+              borderColor: "#E5E7EB",
+            }}
+          >
+            <Text style={{ color: "#111827", fontSize: 22 }}>‹</Text>
+          </Pressable>
+        ) : null}
+        <Text
+          style={{
+            flex: 1,
+            fontSize: viewMode === "main" ? 32 : 25,
+            fontWeight: "bold",
+            color: "#111827",
+          }}
+        >
+          {viewMode === "main"
+            ? "지출"
+            : viewMode === "add"
+              ? editingExpenseId
+                ? "지출 수정"
+                : "지출 추가"
+              : viewMode === "history"
+                ? "전체 내역"
+                : viewMode === "settlement"
+                  ? "정산 상세"
+                  : "예산·환율 설정"}
+        </Text>
+        {viewMode === "main" ? (
+          <Pressable
+            onPress={() => setViewMode("settings")}
+            accessibilityRole="button"
+            style={{
+              paddingHorizontal: 12,
+              paddingVertical: 9,
+              borderRadius: 12,
+              backgroundColor: "white",
+              borderWidth: 1,
+              borderColor: "#E5E7EB",
+            }}
+          >
+            <Text style={{ color: "#4B5563", fontWeight: "bold", fontSize: 13 }}>
+              설정
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
 
       {trip && (
         <Text
@@ -2090,7 +2583,344 @@ export default function ExpenseScreen() {
         </Text>
       )}
 
+      {viewMode === "main" ? (
+        <>
+          <View
+            style={{
+              marginTop: 20,
+              padding: 18,
+              borderRadius: 20,
+              backgroundColor: "#111827",
+            }}
+          >
+            <Text style={{ color: "#CBD5E1", fontSize: 13 }}>
+              남은 여행 예산
+            </Text>
+            <Text
+              style={{
+                marginTop: 5,
+                color: "white",
+                fontSize: 30,
+                fontWeight: "bold",
+              }}
+            >
+              ₩{formatMoney(remaining)}
+            </Text>
+            <View
+              style={{
+                marginTop: 13,
+                height: 8,
+                borderRadius: 999,
+                overflow: "hidden",
+                backgroundColor: "#374151",
+              }}
+            >
+              <View
+                style={{
+                  width: `${budgetNumber > 0
+                    ? Math.min(100, Math.max(0, (totalExpenseKrw / budgetNumber) * 100))
+                    : 0}%`,
+                  height: "100%",
+                  borderRadius: 999,
+                  backgroundColor:
+                    budgetNumber > 0 && totalExpenseKrw > budgetNumber
+                      ? "#F87171"
+                      : "#60A5FA",
+                }}
+              />
+            </View>
+            <View
+              style={{
+                marginTop: 10,
+                flexDirection: "row",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <Text style={{ color: "#CBD5E1", fontSize: 12 }}>
+                사용 ₩{formatMoney(totalExpenseKrw)}
+              </Text>
+              <Text style={{ color: "#CBD5E1", fontSize: 12 }}>
+                전체 ₩{formatMoney(budgetNumber)}
+              </Text>
+            </View>
+            {!expenseSettingsConfigured ? (
+              <Pressable
+                onPress={() => setViewMode("settings")}
+                style={{ marginTop: 12 }}
+              >
+                <Text style={{ color: "#93C5FD", fontSize: 12, fontWeight: "bold" }}>
+                  예산과 외화 환율을 먼저 설정해주세요 →
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+
+          <View style={{ marginTop: 12, flexDirection: "row", gap: 10 }}>
+            <View
+              style={{
+                flex: 1,
+                minHeight: 112,
+                padding: 14,
+                borderRadius: 16,
+                backgroundColor: "white",
+                borderWidth: 1,
+                borderColor: "#E5E7EB",
+              }}
+            >
+              <Text style={{ color: "#6B7280", fontSize: 12 }}>오늘 지출</Text>
+              <Text
+                style={{ marginTop: 8, color: "#111827", fontSize: 21, fontWeight: "bold" }}
+              >
+                ₩{formatMoney(todayExpenseKrw)}
+              </Text>
+              <Text style={{ marginTop: 6, color: "#9CA3AF", fontSize: 11 }}>
+                {todayExpenses.length}건 · 대여 제외
+              </Text>
+            </View>
+
+            <Pressable
+              onPress={() => setViewMode("settlement")}
+              style={{
+                flex: 1,
+                minHeight: 112,
+                padding: 14,
+                borderRadius: 16,
+                backgroundColor: "white",
+                borderWidth: 1,
+                borderColor: "#E5E7EB",
+              }}
+            >
+              <Text style={{ color: "#6B7280", fontSize: 12 }}>내 공동 정산</Text>
+              {memberLedgerSummary &&
+              (memberLedgerSummary.receivable.JPY > 0 ||
+                memberLedgerSummary.payable.JPY > 0 ||
+                memberLedgerSummary.receivable.KRW > 0 ||
+                memberLedgerSummary.payable.KRW > 0) ? (
+                <>
+                  <Text style={{ marginTop: 7, color: "#059669", fontSize: 12 }}>
+                    받을 돈 ¥{formatMoney(memberLedgerSummary.receivable.JPY)} · ₩
+                    {formatMoney(memberLedgerSummary.receivable.KRW)}
+                  </Text>
+                  <Text style={{ marginTop: 5, color: "#DC2626", fontSize: 12 }}>
+                    갚을 돈 ¥{formatMoney(memberLedgerSummary.payable.JPY)} · ₩
+                    {formatMoney(memberLedgerSummary.payable.KRW)}
+                  </Text>
+                </>
+              ) : (
+                <Text
+                  style={{ marginTop: 12, color: "#059669", fontSize: 14, fontWeight: "bold" }}
+                >
+                  정산할 내역 없음
+                </Text>
+              )}
+              <Text style={{ marginTop: "auto", color: "#2563EB", fontSize: 11 }}>
+                상세 보기 →
+              </Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            onPress={openNewExpense}
+            accessibilityRole="button"
+            style={{
+              marginTop: 14,
+              paddingVertical: 15,
+              borderRadius: 15,
+              alignItems: "center",
+              backgroundColor: "#2563EB",
+            }}
+          >
+            <Text style={{ color: "white", fontSize: 17, fontWeight: "bold" }}>
+              + 지출 추가
+            </Text>
+          </Pressable>
+
+          <View
+            style={{
+              marginTop: 16,
+              padding: 16,
+              borderRadius: 18,
+              backgroundColor: "white",
+              borderWidth: 1,
+              borderColor: "#E5E7EB",
+            }}
+          >
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ color: "#111827", fontSize: 18, fontWeight: "bold" }}>
+                최근 내역
+              </Text>
+              <Pressable onPress={() => setViewMode("history")} hitSlop={8}>
+                <Text style={{ color: "#2563EB", fontSize: 13, fontWeight: "bold" }}>
+                  전체 보기
+                </Text>
+              </Pressable>
+            </View>
+
+            {recentExpenses.length === 0 ? (
+              <View style={{ paddingVertical: 18, alignItems: "center" }}>
+                <Text style={{ color: "#6B7280" }}>아직 기록이 없습니다.</Text>
+              </View>
+            ) : (
+              recentExpenses.map((expense, index) => {
+                const type = expense.expenseType ?? "personal";
+                const payerLabel = getExpensePartyLabel(
+                  expense.paidByMemberId,
+                  expense.payer,
+                  memberDisplayOptions
+                );
+                const relatedCount =
+                  type === "shared"
+                    ? new Set([
+                        expense.paidByMemberId,
+                        ...(expense.participantMemberIds ?? []),
+                      ].filter(Boolean)).size
+                    : type === "loan"
+                      ? 2
+                      : 1;
+
+                return (
+                  <Pressable
+                    key={expense.id}
+                    onPress={() => beginEditExpense(expense)}
+                    style={{
+                      paddingTop: 13,
+                      paddingBottom: 11,
+                      borderTopWidth: index === 0 ? 0 : 1,
+                      borderTopColor: "#F3F4F6",
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 12,
+                    }}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: "#111827", fontWeight: "bold" }}>
+                        {expense.memo?.trim() ||
+                          (type === "loan" ? "대여" : expense.category)}
+                      </Text>
+                      <Text style={{ marginTop: 4, color: "#6B7280", fontSize: 12 }}>
+                        {type === "shared"
+                          ? `공동 · ${payerLabel} 결제 · ${relatedCount}명`
+                          : type === "loan"
+                            ? "대여 · 2명"
+                            : "개인 지출"}
+                      </Text>
+                    </View>
+                    <Text style={{ color: "#111827", fontWeight: "bold" }}>
+                      {currencySymbol(expense.currency)}
+                      {formatMoney(expense.localAmount)}
+                    </Text>
+                  </Pressable>
+                );
+              })
+            )}
+          </View>
+        </>
+      ) : null}
+
+      {viewMode === "settings" ? (
+        <>
+      {memberOptions.length > 0 ? (
+        <View
+          style={{
+            marginTop: 16,
+            padding: 14,
+            borderRadius: 16,
+            backgroundColor: "#EFF6FF",
+            borderWidth: 1,
+            borderColor: "#BFDBFE",
+          }}
+        >
+          <Text style={{ color: "#1E3A8A", fontWeight: "bold" }}>
+            가상 멤버로 보기
+          </Text>
+          <Text style={{ marginTop: 4, color: "#475569", fontSize: 12 }}>
+            개발용 화면 전환입니다. 실제 로그인이나 서버 접근 권한이 아닙니다.
+          </Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+            {memberOptions.map((member) => {
+              const selected = effectiveMemberId === member.id;
+              return (
+                <Pressable
+                  key={member.id}
+                  onPress={() => setViewingMemberId(member.id)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 9,
+                    borderRadius: 999,
+                    backgroundColor: selected ? "#2563EB" : "white",
+                    borderWidth: 1,
+                    borderColor: selected ? "#2563EB" : "#CBD5E1",
+                  }}
+                >
+                  <Text style={{ color: selected ? "white" : "#334155", fontWeight: "bold" }}>
+                    {member.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
+
+      {memberLedgerSummary ? (
+        <View
+          style={{
+            marginTop: 14,
+            padding: 16,
+            borderRadius: 16,
+            backgroundColor: "white",
+            borderWidth: 1,
+            borderColor: "#E5E7EB",
+          }}
+        >
+          <Text style={{ color: "#111827", fontSize: 18, fontWeight: "bold" }}>
+            내 공동 정산 요약
+          </Text>
+          <Text style={{ marginTop: 4, color: "#6B7280", fontSize: 12 }}>
+            원화와 엔화는 환율 없이 서로 합치지 않습니다.
+          </Text>
+          {(["JPY", "KRW"] as CurrencyCode[]).map((code) => (
+            <View
+              key={code}
+              style={{
+                marginTop: 12,
+                paddingTop: 12,
+                borderTopWidth: 1,
+                borderTopColor: "#F3F4F6",
+              }}
+            >
+              <Text style={{ color: "#374151", fontWeight: "bold" }}>{code}</Text>
+              <Text style={{ marginTop: 5, color: "#4B5563" }}>
+                실제 결제 {currencySymbol(code)}
+                {formatMoney(memberLedgerSummary.paidConsumption[code])}
+                {" · "}내 부담 {currencySymbol(code)}
+                {formatMoney(memberLedgerSummary.consumption[code])}
+              </Text>
+              <Text style={{ marginTop: 4, color: "#4B5563" }}>
+                받을 돈 {currencySymbol(code)}
+                {formatMoney(memberLedgerSummary.receivable[code])}
+                {" · "}갚을 돈 {currencySymbol(code)}
+                {formatMoney(memberLedgerSummary.payable[code])}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
+        </>
+      ) : null}
+
       {/* 오늘 지출 요약 */}
+      {false && (
       <View
         style={{
           marginTop: 24,
@@ -2227,7 +3057,11 @@ export default function ExpenseScreen() {
         </View>
       </View>
 
+      )}
+
       {/* 여행 자금 */}
+      {viewMode === "settings" ? (
+        <>
       <View
         style={{
           marginTop: 24,
@@ -2760,7 +3594,11 @@ export default function ExpenseScreen() {
         )}
       </View>
 
+        </>
+      ) : null}
+
       {/* 기록 추가 */}
+      {viewMode === "add" ? (
       <View
         style={{
           marginTop: 22,
@@ -2791,16 +3629,16 @@ export default function ExpenseScreen() {
           {[
             {
               value:
-                "personal" as ExpenseType,
+                "shared" as ExpenseType,
               label:
-                "개인 지출",
+                "공동 지출",
             },
 
             {
               value:
-                "shared" as ExpenseType,
+                "personal" as ExpenseType,
               label:
-                "공동 지출",
+                "개인 지출",
             },
 
             {
@@ -2823,7 +3661,7 @@ export default function ExpenseScreen() {
                     "shared"
                   ) {
                     setParticipantMemberIds(
-                      memberIds
+                      payerMemberId ? [payerMemberId] : memberIds.slice(0, 1)
                     );
                   }
                 }}
@@ -2856,6 +3694,54 @@ export default function ExpenseScreen() {
               </Pressable>
             )
           )}
+        </View>
+
+        <Text style={{ marginTop: 18, fontWeight: "bold", color: "#374151" }}>
+          금액
+        </Text>
+        <View style={{ marginTop: 8, flexDirection: "row", gap: 8 }}>
+          <TextInput
+            value={amount}
+            onChangeText={(value) => setAmount(formatNumericInput(value, true))}
+            placeholder="0"
+            placeholderTextColor="#9CA3AF"
+            keyboardType="decimal-pad"
+            autoFocus={!editingExpenseId}
+            style={{
+              flex: 1,
+              backgroundColor: "#F9FAFB",
+              color: "#111827",
+              borderRadius: 12,
+              padding: 14,
+              fontSize: 20,
+              fontWeight: "bold",
+            }}
+          />
+          {(["JPY", "KRW"] as CurrencyCode[]).map((code) => (
+            <Pressable
+              key={code}
+              onPress={() => {
+                setCurrency(code);
+                setRateInput(getRateDisplayValue(code, exchangeRates));
+              }}
+              style={{
+                minWidth: 58,
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: 12,
+                backgroundColor: currency === code ? "#111827" : "#F3F4F6",
+              }}
+            >
+              <Text
+                style={{
+                  color: currency === code ? "white" : "#4B5563",
+                  fontWeight: "bold",
+                }}
+              >
+                {code}
+              </Text>
+            </Pressable>
+          ))}
         </View>
 
         <Text
@@ -2948,6 +3834,37 @@ export default function ExpenseScreen() {
           </Pressable>
         </View>
 
+        {expenseType === "personal" ? (
+          <>
+            <Text style={{ marginTop: 18, fontWeight: "bold", color: "#374151" }}>
+              지출 소유자
+            </Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+              {memberOptions.map((member) => (
+                <Pressable
+                  key={member.id}
+                  onPress={() => setPersonalOwnerMemberId(member.id)}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    borderRadius: 20,
+                    backgroundColor:
+                      personalOwnerMemberId === member.id ? "#111827" : "#F3F4F6",
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: personalOwnerMemberId === member.id ? "white" : "#374151",
+                    }}
+                  >
+                    {member.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </>
+        ) : null}
+
         {expenseType ===
           "shared" && (
           <>
@@ -2973,9 +3890,12 @@ export default function ExpenseScreen() {
                 (member) => (
                   <Pressable
                     key={member.id}
-                    onPress={() =>
-                      setPayerMemberId(member.id)
-                    }
+                    onPress={() => {
+                      setPayerMemberId(member.id);
+                      setParticipantMemberIds((current) =>
+                        current.includes(member.id) ? current : [member.id, ...current]
+                      );
+                    }}
                     style={{
                       padding: 10,
                       borderRadius: 20,
@@ -3064,6 +3984,105 @@ export default function ExpenseScreen() {
                 }
               )}
             </View>
+
+            <Pressable
+              onPress={() => setShowAdvancedExpenseOptions((current) => !current)}
+              style={{
+                marginTop: 14,
+                alignSelf: "flex-start",
+                paddingHorizontal: 12,
+                paddingVertical: 9,
+                borderRadius: 10,
+                backgroundColor: "#F3F4F6",
+              }}
+            >
+              <Text style={{ color: "#4B5563", fontWeight: "bold", fontSize: 13 }}>
+                {showAdvancedExpenseOptions ? "고급 옵션 닫기" : "직접 금액 지정 · 고급 옵션"}
+              </Text>
+            </Pressable>
+
+            {showAdvancedExpenseOptions ? (
+              <>
+            <Text
+              style={{ marginTop: 18, fontWeight: "bold", color: "#374151" }}
+            >
+              분할 방식
+            </Text>
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
+              {([
+                { value: "equal" as const, label: "균등 분할" },
+                { value: "custom" as const, label: "직접 금액 지정" },
+              ]).map((item) => (
+                <Pressable
+                  key={item.value}
+                  onPress={() => setSplitMethod(item.value)}
+                  style={{
+                    flex: 1,
+                    alignItems: "center",
+                    paddingVertical: 10,
+                    borderRadius: 12,
+                    backgroundColor:
+                      splitMethod === item.value ? "#1D4ED8" : "#F3F4F6",
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: splitMethod === item.value ? "white" : "#374151",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {item.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {splitMethod === "custom" && (
+              <View
+                style={{
+                  marginTop: 10,
+                  padding: 12,
+                  borderRadius: 12,
+                  backgroundColor: "#F9FAFB",
+                  gap: 8,
+                }}
+              >
+                {participantMemberIds.map((memberId) => (
+                  <View
+                    key={memberId}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 10 }}
+                  >
+                    <Text style={{ flex: 1, color: "#374151" }}>
+                      {getExpensePartyLabel(memberId, undefined, memberDisplayOptions)}
+                    </Text>
+                    <TextInput
+                      value={customShareInputs[memberId] ?? ""}
+                      onChangeText={(value) =>
+                        setCustomShareInputs((current) => ({
+                          ...current,
+                          [memberId]: formatNumericInput(value),
+                        }))
+                      }
+                      placeholder={`금액 (${currency})`}
+                      placeholderTextColor="#9CA3AF"
+                      keyboardType="number-pad"
+                      style={{
+                        width: 145,
+                        backgroundColor: "white",
+                        color: "#111827",
+                        borderWidth: 1,
+                        borderColor: "#D1D5DB",
+                        borderRadius: 10,
+                        padding: 10,
+                        textAlign: "right",
+                      }}
+                    />
+                  </View>
+                ))}
+              </View>
+            )}
+              </>
+            ) : null}
           </>
         )}
 
@@ -3178,32 +4197,6 @@ export default function ExpenseScreen() {
           </>
         )}
 
-        <TextInput
-          value={amount}
-          onChangeText={(
-            value
-          ) =>
-            setAmount(
-              formatNumericInput(
-                value,
-                true
-              )
-            )
-          }
-          placeholder={`금액 (${currency})`}
-          placeholderTextColor="#9CA3AF"
-          keyboardType="decimal-pad"
-          style={{
-            marginTop: 18,
-            backgroundColor:
-              "#F9FAFB",
-            color: "#111827",
-            borderRadius: 12,
-            padding: 14,
-            fontSize: 17,
-          }}
-        />
-
         {previewKrw > 0 && (
           <View
             style={{
@@ -3239,6 +4232,7 @@ export default function ExpenseScreen() {
 
             {expenseType ===
               "shared" &&
+              splitMethod === "equal" &&
               perPersonLocal >
                 0 && (
                 <Text
@@ -3321,6 +4315,7 @@ export default function ExpenseScreen() {
           </>
         )}
 
+        {(expenseType !== "shared" || showAdvancedExpenseOptions) ? (
         <TextInput
           value={memo}
           onChangeText={setMemo}
@@ -3340,6 +4335,7 @@ export default function ExpenseScreen() {
             padding: 14,
           }}
         />
+        ) : null}
 
         <Pressable
           disabled={
@@ -3372,12 +4368,123 @@ export default function ExpenseScreen() {
           >
             {savingExpense
               ? "저장 중..."
-              : "기록 저장"}
+              : editingExpenseId
+                ? "수정 내용 저장"
+                : "기록 저장"}
           </Text>
         </Pressable>
+
+        {editingExpenseId ? (
+          <Pressable
+            onPress={() => {
+              setEditingExpenseId(null);
+              setAmount("");
+              setMemo("");
+              setSplitMethod("equal");
+              setCustomShareInputs({});
+            }}
+            style={{ marginTop: 10, alignItems: "center", paddingVertical: 10 }}
+          >
+            <Text style={{ color: "#6B7280", fontWeight: "bold" }}>
+              수정 취소
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
 
+      ) : null}
+
       {/* 최종 정산 */}
+      {viewMode === "settlement" ? (
+        <>
+      {memberLedgerSummary ? (
+        <View
+          style={{
+            marginTop: 18,
+            padding: 16,
+            borderRadius: 18,
+            backgroundColor: "white",
+            borderWidth: 1,
+            borderColor: "#E5E7EB",
+          }}
+        >
+          <Text style={{ color: "#111827", fontSize: 18, fontWeight: "bold" }}>
+            내 정산 요약
+          </Text>
+          {(["JPY", "KRW"] as CurrencyCode[]).map((code) => (
+            <View
+              key={code}
+              style={{ marginTop: 11, flexDirection: "row", justifyContent: "space-between" }}
+            >
+              <Text style={{ color: "#6B7280", fontWeight: "bold" }}>{code}</Text>
+              <Text style={{ color: "#059669" }}>
+                받을 돈 {currencySymbol(code)}{formatMoney(memberLedgerSummary.receivable[code])}
+              </Text>
+              <Text style={{ color: "#DC2626" }}>
+                갚을 돈 {currencySymbol(code)}{formatMoney(memberLedgerSummary.payable[code])}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {visibleLoanExpenses.length > 0 ? (
+        <View
+          style={{
+            marginTop: 12,
+            padding: 16,
+            borderRadius: 18,
+            backgroundColor: "white",
+            borderWidth: 1,
+            borderColor: "#E5E7EB",
+          }}
+        >
+          <Text style={{ color: "#111827", fontSize: 18, fontWeight: "bold" }}>
+            대여·상환 잔액
+          </Text>
+          {visibleLoanExpenses.map((expense) => {
+            const repaid = settlementPayments
+              .filter(
+                (payment) =>
+                  payment.status !== "cancelled" &&
+                  payment.relatedExpenseId === expense.id &&
+                  payment.currency === expense.currency
+              )
+              .reduce((sum, payment) => sum + (payment.localAmount ?? 0), 0);
+            const lender = getExpensePartyLabel(
+              expense.lenderMemberId,
+              expense.lender,
+              memberDisplayOptions
+            );
+            const borrower = getExpensePartyLabel(
+              expense.borrowerMemberId,
+              expense.borrower,
+              memberDisplayOptions
+            );
+
+            return (
+              <View
+                key={expense.id}
+                style={{
+                  marginTop: 11,
+                  paddingTop: 11,
+                  borderTopWidth: 1,
+                  borderTopColor: "#F3F4F6",
+                }}
+              >
+                <Text style={{ color: "#374151", fontWeight: "bold" }}>
+                  {borrower} → {lender}
+                </Text>
+                <Text style={{ marginTop: 4, color: "#6B7280", fontSize: 12 }}>
+                  원금 {currencySymbol(expense.currency)}{formatMoney(expense.localAmount)} · 상환{" "}
+                  {currencySymbol(expense.currency)}{formatMoney(repaid)} · 남음{" "}
+                  {currencySymbol(expense.currency)}
+                  {formatMoney(Math.max(0, expense.localAmount - repaid))}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
       <View
         style={{
           marginTop: 22,
@@ -3397,7 +4504,7 @@ export default function ExpenseScreen() {
           최종 정산
         </Text>
 
-        {settlements.length ===
+        {visibleSettlements.length ===
         0 ? (
           <Text
             style={{
@@ -3408,29 +4515,43 @@ export default function ExpenseScreen() {
             현재 미정산 금액이 없습니다.
           </Text>
         ) : (
-          settlements.map(
+          visibleSettlements.map(
             (settlement, index) => {
               const actionKey =
-                `final:${settlement.fromKey}:${settlement.toKey}`;
+                `final:${settlement.currency}:${settlement.fromKey}:${settlement.toKey}`;
               const isProcessing =
                 processingSettlementAction ===
                 actionKey;
               const isCurrentFrom =
                 settlement.fromMemberId ===
-                currentMemberId;
+                effectiveMemberId;
               const isCurrentTo =
                 settlement.toMemberId ===
-                currentMemberId;
+                effectiveMemberId;
               const breakdownRows =
                 getSettlementBreakdownRows(
                   settlement
                 );
               const hasDetailedBreakdown =
                 breakdownRows.length >= 2;
+              const settlementMemberIds = new Set(
+                [settlement.fromMemberId, settlement.toMemberId].filter(
+                  (memberId): memberId is string => Boolean(memberId)
+                )
+              );
+              const relatedSettlementExpenses = activeExpenses.filter(
+                (expense) =>
+                  expense.currency === settlement.currency &&
+                  getExpenseSettlementRelations(expense).some(
+                    (relation) =>
+                      settlementMemberIds.has(relation.fromMemberId) &&
+                      settlementMemberIds.has(relation.toMemberId)
+                  )
+              );
 
               return (
                 <View
-                key={`${settlement.fromKey}-${settlement.toKey}-${index}`}
+                key={`${settlement.currency}-${settlement.fromKey}-${settlement.toKey}-${index}`}
                 style={{
                   marginTop: 12,
                   backgroundColor: "#FFF7ED",
@@ -3482,7 +4603,8 @@ export default function ExpenseScreen() {
                     fontWeight: "bold",
                   }}
                 >
-                  ₩{formatMoney(settlement.amount)}{" "}
+                  {currencySymbol(settlement.currency)}
+                  {formatMoney(settlement.amount)}{" "}
                   <Text style={{ fontSize: 17 }}>
                     {isCurrentTo
                       ? "받으면 끝"
@@ -3558,7 +4680,8 @@ export default function ExpenseScreen() {
                           fontWeight: "bold",
                         }}
                       >
-                        ₩{formatMoney(settlement.amount)}
+                        {currencySymbol(settlement.currency)}
+                        {formatMoney(settlement.amount)}
                       </Text>
                     </View>
                   </View>
@@ -3584,6 +4707,32 @@ export default function ExpenseScreen() {
                     공동지출과 대여 내역을 모두 합산한 금액입니다.
                   </Text>
                 )}
+
+                {relatedSettlementExpenses.length > 0 ? (
+                  <View
+                    style={{
+                      marginTop: 14,
+                      paddingTop: 12,
+                      borderTopWidth: 1,
+                      borderTopColor: "#FED7AA",
+                    }}
+                  >
+                    <Text style={{ color: "#6B7280", fontSize: 12, fontWeight: "bold" }}>
+                      관련 거래 {relatedSettlementExpenses.length}건
+                    </Text>
+                    {relatedSettlementExpenses.slice(0, 4).map((expense) => (
+                      <Text
+                        key={expense.id}
+                        numberOfLines={1}
+                        style={{ marginTop: 5, color: "#4B5563", fontSize: 12 }}
+                      >
+                        · {expense.memo?.trim() ||
+                          (expense.expenseType === "loan" ? "대여" : expense.category)}{" "}
+                        {currencySymbol(expense.currency)}{formatMoney(expense.localAmount)}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
 
                 <Pressable
                   disabled={
@@ -3630,7 +4779,7 @@ export default function ExpenseScreen() {
         )}
       </View>
 
-      {settlementPayments.length >
+      {visibleSettlementPayments.length >
         0 && (
         <View
           style={{
@@ -3651,7 +4800,7 @@ export default function ExpenseScreen() {
             정산 완료 내역
           </Text>
 
-          {settlementPayments.map(
+          {visibleSettlementPayments.map(
             (payment) => {
               const actionKey =
                 `payment:${payment.id}`;
@@ -3669,12 +4818,17 @@ export default function ExpenseScreen() {
                 memberDisplayOptions
               );
               const isCurrentFrom = Boolean(
-                currentMemberId &&
-                  payment.fromMemberId === currentMemberId
+                effectiveMemberId &&
+                  payment.fromMemberId === effectiveMemberId
               );
               const isCurrentTo = Boolean(
-                currentMemberId &&
-                  payment.toMemberId === currentMemberId
+                effectiveMemberId &&
+                  payment.toMemberId === effectiveMemberId
+              );
+              const isPartialRepayment = Boolean(
+                payment.source === "loan" &&
+                  payment.relatedExpenseId &&
+                  !payment.resolvedRelations?.length
               );
 
               return (
@@ -3705,7 +4859,7 @@ export default function ExpenseScreen() {
                       fontWeight: "bold",
                     }}
                   >
-                    ✓ 정산완료
+                    {isPartialRepayment ? "일부 상환" : "✓ 정산완료"}
                   </Text>
                 </View>
 
@@ -3732,7 +4886,8 @@ export default function ExpenseScreen() {
                     fontWeight: "bold",
                   }}
                 >
-                  ₩{formatMoney(payment.amountKrw)}
+                  {currencySymbol(payment.currency ?? "KRW")}
+                  {formatMoney(payment.localAmount ?? payment.amountKrw)}
                 </Text>
 
                 <Text
@@ -3775,7 +4930,9 @@ export default function ExpenseScreen() {
                   >
                     {isProcessing
                       ? "처리 중..."
-                      : "정산 완료 취소"}
+                      : isPartialRepayment
+                        ? "상환 기록 취소"
+                        : "정산 완료 취소"}
                   </Text>
                 </Pressable>
               </View>
@@ -3785,6 +4942,11 @@ export default function ExpenseScreen() {
         </View>
       )}
 
+        </>
+      ) : null}
+
+      {viewMode === "history" ? (
+        <>
       <Text
         style={{
           marginTop: 28,
@@ -3796,7 +4958,72 @@ export default function ExpenseScreen() {
         전체 기록
       </Text>
 
-      {expenses.length === 0 ? (
+      <View style={{ marginTop: 12, gap: 9 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 7 }}>
+          {([
+            { value: "all" as const, label: "전체" },
+            { value: "personal" as const, label: "개인" },
+            { value: "shared" as const, label: "공동" },
+            { value: "loan" as const, label: "대여" },
+          ]).map((item) => (
+            <Pressable
+              key={item.value}
+              onPress={() => setHistoryTypeFilter(item.value)}
+              style={{
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                borderRadius: 999,
+                backgroundColor:
+                  historyTypeFilter === item.value ? "#2563EB" : "white",
+                borderWidth: 1,
+                borderColor:
+                  historyTypeFilter === item.value ? "#2563EB" : "#E5E7EB",
+              }}
+            >
+              <Text
+                style={{
+                  color: historyTypeFilter === item.value ? "white" : "#4B5563",
+                  fontWeight: "bold",
+                  fontSize: 12,
+                }}
+              >
+                {item.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <View style={{ flexDirection: "row", gap: 7 }}>
+          {([
+            { value: "all" as const, label: "모든 통화" },
+            { value: "JPY" as const, label: "JPY" },
+            { value: "KRW" as const, label: "KRW" },
+          ]).map((item) => (
+            <Pressable
+              key={item.value}
+              onPress={() => setHistoryCurrencyFilter(item.value)}
+              style={{
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                borderRadius: 10,
+                backgroundColor:
+                  historyCurrencyFilter === item.value ? "#111827" : "#F3F4F6",
+              }}
+            >
+              <Text
+                style={{
+                  color: historyCurrencyFilter === item.value ? "white" : "#4B5563",
+                  fontWeight: "bold",
+                  fontSize: 12,
+                }}
+              >
+                {item.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+
+      {filteredHistoryExpenses.length === 0 ? (
         <View
           style={{
             marginTop: 12,
@@ -3815,8 +5042,8 @@ export default function ExpenseScreen() {
           </Text>
         </View>
       ) : (
-        expenses.map(
-          (expense) => {
+        filteredHistoryExpenses.map(
+          (expense, expenseIndex) => {
             const isShared =
               expense.expenseType === "shared";
             const isLoan =
@@ -3871,12 +5098,29 @@ export default function ExpenseScreen() {
               memberDisplayOptions
             );
             const isCurrentBorrower = Boolean(
-              currentMemberId &&
-                expense.borrowerMemberId === currentMemberId
+              effectiveMemberId &&
+                expense.borrowerMemberId === effectiveMemberId
             );
             const isCurrentLender = Boolean(
-              currentMemberId &&
-                expense.lenderMemberId === currentMemberId
+              effectiveMemberId &&
+                expense.lenderMemberId === effectiveMemberId
+            );
+            const repaidLocalAmount = isLoan
+              ? settlementPayments
+                  .filter(
+                    (payment) =>
+                      payment.status !== "cancelled" &&
+                      payment.relatedExpenseId === expense.id &&
+                      payment.currency === expense.currency
+                  )
+                  .reduce(
+                    (sum, payment) => sum + (payment.localAmount ?? 0),
+                    0
+                  )
+              : 0;
+            const remainingLoanAmount = Math.max(
+              0,
+              expense.localAmount - repaidLocalAmount
             );
             const loanBadge = isCurrentBorrower
               ? "빌린 돈"
@@ -3893,12 +5137,27 @@ export default function ExpenseScreen() {
               : isCurrentLender
                 ? "내가 받을 돈"
                 : `${borrowerLabel}이 갚아야 할 돈`;
+            const showDateHeader =
+              expenseIndex === 0 ||
+              filteredHistoryExpenses[expenseIndex - 1]?.date !== expense.date;
 
             return (
+            <Fragment key={expense.id}>
+            {showDateHeader ? (
+              <Text
+                style={{
+                  marginTop: 18,
+                  color: "#6B7280",
+                  fontSize: 13,
+                  fontWeight: "bold",
+                }}
+              >
+                {formatExpenseDate(expense.date)}
+              </Text>
+            ) : null}
             <View
-              key={expense.id}
               style={{
-                marginTop: 12,
+                marginTop: 8,
                 padding: 17,
                 backgroundColor: "white",
                 borderRadius: 18,
@@ -4006,10 +5265,19 @@ export default function ExpenseScreen() {
                 ) : null}
 
                 <Pressable
+                  onPress={() => beginEditExpense(expense)}
+                  hitSlop={8}
+                  style={{ marginLeft: "auto", paddingHorizontal: 5, paddingVertical: 4 }}
+                >
+                  <Text style={{ color: "#2563EB", fontSize: 12 }}>
+                    수정
+                  </Text>
+                </Pressable>
+
+                <Pressable
                   onPress={() => handleDelete(expense)}
                   hitSlop={8}
                   style={{
-                    marginLeft: "auto",
                     paddingHorizontal: 5,
                     paddingVertical: 4,
                   }}
@@ -4099,6 +5367,9 @@ export default function ExpenseScreen() {
                     }}
                   >
                     {participants.map((participant) => {
+                      const participantShare = getExpenseShares(expense).find(
+                        (share) => share.memberId === participant.key
+                      );
                       const relation = expenseRelations.find(
                         (item) =>
                           item.fromMemberId === participant.key
@@ -4155,16 +5426,8 @@ export default function ExpenseScreen() {
                               fontWeight: "bold",
                             }}
                           >
-                            {participants.length > 0 &&
-                            expense.krwAmount % participants.length !== 0
-                              ? "약 "
-                              : ""}
-                            ₩{formatMoney(
-                              participants.length > 0
-                                ? expense.krwAmount /
-                                    participants.length
-                                : 0
-                            )}
+                            {currencySymbol(expense.currency)}
+                            {formatMoney(participantShare?.amount ?? 0)}
                           </Text>
                         </View>
                       );
@@ -4212,6 +5475,61 @@ export default function ExpenseScreen() {
                   >
                     {loanMeaning}
                   </Text>
+
+                  {repaidLocalAmount > 0 ? (
+                    <Text style={{ marginTop: 7, color: "#4B5563" }}>
+                      상환 {currencySymbol(expense.currency)}
+                      {formatMoney(repaidLocalAmount)} · 남음{" "}
+                      {currencySymbol(expense.currency)}
+                      {formatMoney(remainingLoanAmount)}
+                    </Text>
+                  ) : null}
+
+                  {!isLoanSettled && remainingLoanAmount > 0 ? (
+                    <View
+                      style={{
+                        marginTop: 12,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <TextInput
+                        value={repaymentInputs[expense.id] ?? ""}
+                        onChangeText={(value) =>
+                          setRepaymentInputs((current) => ({
+                            ...current,
+                            [expense.id]: formatNumericInput(value),
+                          }))
+                        }
+                        placeholder={`상환액 (${expense.currency})`}
+                        placeholderTextColor="#9CA3AF"
+                        keyboardType="number-pad"
+                        style={{
+                          flex: 1,
+                          backgroundColor: "#F9FAFB",
+                          color: "#111827",
+                          borderWidth: 1,
+                          borderColor: "#D1D5DB",
+                          borderRadius: 10,
+                          padding: 10,
+                        }}
+                      />
+                      <Pressable
+                        onPress={() => addLoanRepayment(expense)}
+                        style={{
+                          paddingHorizontal: 13,
+                          paddingVertical: 11,
+                          borderRadius: 10,
+                          backgroundColor: "#7C3AED",
+                        }}
+                      >
+                        <Text style={{ color: "white", fontWeight: "bold" }}>
+                          상환 기록
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
 
                   {isLoanResolvedByFinal ? (
                     <View
@@ -4346,6 +5664,13 @@ export default function ExpenseScreen() {
                 </Text>
               ) : null}
 
+              {expense.changeHistory?.length ? (
+                <Text style={{ marginTop: 7, color: "#9CA3AF", fontSize: 11 }}>
+                  변경 기록 {expense.changeHistory.length}건 ·{" "}
+                  {expense.changeHistory.at(-1)?.summary}
+                </Text>
+              ) : null}
+
               <Text
                 style={{
                   marginTop: 13,
@@ -4363,10 +5688,65 @@ export default function ExpenseScreen() {
                   : ""}
               </Text>
             </View>
+            </Fragment>
             );
           }
         )
       )}
+
+      {cancelledExpenses.length > 0 ? (
+        <View
+          style={{
+            marginTop: 22,
+            padding: 16,
+            borderRadius: 16,
+            backgroundColor: "#F3F4F6",
+          }}
+        >
+          <Text style={{ color: "#374151", fontSize: 17, fontWeight: "bold" }}>
+            취소한 기록
+          </Text>
+          {cancelledExpenses.map((expense) => (
+            <View
+              key={expense.id}
+              style={{
+                marginTop: 10,
+                padding: 12,
+                borderRadius: 12,
+                backgroundColor: "white",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: "#111827", fontWeight: "bold" }}>
+                  {expense.memo?.trim() ||
+                    (expense.expenseType === "loan" ? "대여 기록" : expense.category)}
+                </Text>
+                <Text style={{ marginTop: 3, color: "#6B7280" }}>
+                  {currencySymbol(expense.currency)}{formatMoney(expense.localAmount)}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => restoreExpense(expense)}
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 9,
+                  borderRadius: 10,
+                  backgroundColor: "#E0E7FF",
+                }}
+              >
+                <Text style={{ color: "#3730A3", fontWeight: "bold" }}>
+                  복구
+                </Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      ) : null}
+        </>
+      ) : null}
     </ScrollView>
   );
 }

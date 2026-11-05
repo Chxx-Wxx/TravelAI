@@ -36,9 +36,13 @@ import {
   AI_MAX_HISTORY_MESSAGES,
   AI_MAX_QUESTION_LENGTH,
   AiChatError,
+  AiResponseType,
+  AiSituationRecommendation,
   AiUsage,
   sendAiChat,
 } from "../../services/ai";
+
+import AiSituationRecommendationCard from "../../components/AiSituationRecommendationCard";
 
 import {
   fetchSchedules,
@@ -64,10 +68,12 @@ type ChatMessage = {
 
   isError?: boolean;
   usage?: AiUsage;
+  recommendation?: AiSituationRecommendation;
 };
 
 type FailedRequest = {
   question: string;
+  responseMode?: AiResponseType;
 };
 
 const EMPTY_BUDGET_SUMMARY: AiBudgetSummary = {
@@ -76,11 +82,34 @@ const EMPTY_BUDGET_SUMMARY: AiBudgetSummary = {
   remainingBudgetKrw: null,
 };
 
-const quickQuestions = [
-  "내 여행 일정 정리해 줘",
-  "첫째 날 일정이 너무 빡빡하지 않아?",
-  "예산은 얼마나 남았어?",
-  "일정 순서를 개선할 방법이 있어?",
+const quickQuestions: {
+  label: string;
+  draft: string;
+  responseMode: AiResponseType;
+}[] = [
+  {
+    label: "일정이 꼬였어",
+    draft:
+      "일정이 꼬였어. 현실적인 대안 2~3개를 추천해 줘.\n현재 위치: \n현재 시각: \n꼭 지켜야 할 일정: \n동행자 상태·기타 제약: ",
+    responseMode: "situation_alternatives",
+  },
+  {
+    label: "지금 일정이 너무 빡빡해",
+    draft:
+      "지금 일정이 너무 빡빡해. 오늘 남은 일정 중 무엇을 유지하거나 미루면 좋을지 대안 2~3개를 추천해 줘.\n현재 위치·시각: \n꼭 지켜야 할 일정: \n추가 상황: ",
+    responseMode: "situation_alternatives",
+  },
+  {
+    label: "가까운 대안이 필요해",
+    draft:
+      "가까운 대안이 필요해. 이동 시간은 확인되지 않았다면 추측하지 말아줘.\n현재 위치: \n현재 시각: \n이동 가능한 범위: \n꼭 지켜야 할 시간: ",
+    responseMode: "situation_alternatives",
+  },
+  {
+    label: "내 일정 정리",
+    draft: "내 여행 일정을 날짜별로 간단히 정리해 줘.",
+    responseMode: "general",
+  },
 ];
 
 export default function AIScreen() {
@@ -112,6 +141,11 @@ export default function AIScreen() {
     setInput,
   ] =
     useState("");
+
+  const [
+    draftResponseMode,
+    setDraftResponseMode,
+  ] = useState<AiResponseType | undefined>();
 
   const [
     budgetSummary,
@@ -247,7 +281,10 @@ export default function AIScreen() {
   const submitQuestion = useCallback(
     async (
       question: string,
-      options?: { appendUser?: boolean }
+      options?: {
+        appendUser?: boolean;
+        responseMode?: AiResponseType;
+      }
     ) => {
       const message = question.trim();
 
@@ -282,6 +319,8 @@ export default function AIScreen() {
       }
 
       const appendUser = options?.appendUser !== false;
+      const responseMode =
+        options?.responseMode ?? draftResponseMode;
       const historyCandidates = messages
         .filter(
           (item) =>
@@ -310,6 +349,7 @@ export default function AIScreen() {
       setIsSending(true);
       setFailedRequest(null);
       setInput("");
+      setDraftResponseMode(undefined);
 
       if (appendUser) {
         setMessages((current) => [
@@ -329,6 +369,7 @@ export default function AIScreen() {
             question: message,
             history,
             budgetSummary,
+            responseMode,
           },
           controller.signal
         );
@@ -347,6 +388,7 @@ export default function AIScreen() {
             role: "assistant",
             text: result.answer,
             usage: result.usage,
+            recommendation: result.recommendation,
           },
         ]);
       } catch (error) {
@@ -368,7 +410,10 @@ export default function AIScreen() {
               : error.message
             : "AI 답변을 받지 못했습니다. 잠시 후 다시 시도해주세요.";
 
-        setFailedRequest({ question: message });
+        setFailedRequest({
+          question: message,
+          responseMode,
+        });
         setMessages((current) => [
           ...current,
           {
@@ -389,7 +434,7 @@ export default function AIScreen() {
         }
       }
     },
-    [budgetSummary, messages, trip]
+    [budgetSummary, draftResponseMode, messages, trip]
   );
 
   function handleSend(text?: string) {
@@ -398,6 +443,18 @@ export default function AIScreen() {
 
   function handleCancel() {
     activeRequestRef.current?.abort();
+  }
+
+  function handleQuickQuestion(
+    draft: string,
+    responseMode: AiResponseType
+  ) {
+    if (isSending) {
+      return;
+    }
+
+    setInput(draft);
+    setDraftResponseMode(responseMode);
   }
 
   return (
@@ -670,7 +727,18 @@ export default function AIScreen() {
               "#111827",
           }}
         >
-          빠른 질문
+          상황 대응 질문
+        </Text>
+
+        <Text
+          style={{
+            marginTop: 6,
+            color: "#6B7280",
+            fontSize: 13,
+            lineHeight: 18,
+          }}
+        >
+          버튼은 질문 예시만 입력하며, 전송하기 전에는 AI 비용이 발생하지 않아요.
         </Text>
 
         <View
@@ -685,16 +753,17 @@ export default function AIScreen() {
         >
           {quickQuestions.map(
             (
-              question
+              quickQuestion
             ) => (
               <Pressable
                 key={
-                  question
+                  quickQuestion.label
                 }
                 disabled={isSending}
                 onPress={() =>
-                  handleSend(
-                    question
+                  handleQuickQuestion(
+                    quickQuestion.draft,
+                    quickQuestion.responseMode
                   )
                 }
                 style={{
@@ -721,7 +790,7 @@ export default function AIScreen() {
                       "bold",
                   }}
                 >
-                  {question}
+                  {quickQuestion.label}
                 </Text>
               </Pressable>
             )
@@ -773,7 +842,14 @@ export default function AIScreen() {
                   <View
                     style={{
                       maxWidth:
-                        "85%",
+                        message.recommendation
+                          ? "100%"
+                          : "85%",
+
+                      width:
+                        message.recommendation
+                          ? "100%"
+                          : undefined,
 
                       backgroundColor:
                         isUser
@@ -799,22 +875,28 @@ export default function AIScreen() {
                       paddingVertical: 11,
                     }}
                   >
-                    <Text
-                      style={{
-                        color:
-                          isUser
-                            ? "white"
-                            : message.isError
-                              ? "#991B1B"
-                              : "#374151",
+                    {message.recommendation ? (
+                      <AiSituationRecommendationCard
+                        recommendation={message.recommendation}
+                      />
+                    ) : (
+                      <Text
+                        style={{
+                          color:
+                            isUser
+                              ? "white"
+                              : message.isError
+                                ? "#991B1B"
+                                : "#374151",
 
-                        lineHeight: 20,
-                      }}
-                    >
-                      {
-                        message.text
-                      }
-                    </Text>
+                          lineHeight: 20,
+                        }}
+                      >
+                        {
+                          message.text
+                        }
+                      </Text>
+                    )}
 
                     {message.usage ? (
                       <Text
@@ -883,7 +965,10 @@ export default function AIScreen() {
               onPress={() =>
                 void submitQuestion(
                   failedRequest.question,
-                  { appendUser: false }
+                  {
+                    appendUser: false,
+                    responseMode: failedRequest.responseMode,
+                  }
                 )
               }
               style={{
@@ -938,6 +1023,19 @@ export default function AIScreen() {
             "#E5E7EB",
         }}
       >
+        {draftResponseMode === "situation_alternatives" ? (
+          <Text
+            style={{
+              marginBottom: 7,
+              color: "#2563EB",
+              fontSize: 12,
+              fontWeight: "700",
+            }}
+          >
+            일정 대안 추천 · 상황을 구체적으로 적은 뒤 전송해주세요.
+          </Text>
+        ) : null}
+
         <View
           style={{
             flexDirection:
@@ -947,9 +1045,13 @@ export default function AIScreen() {
         >
           <TextInput
             value={input}
-            onChangeText={
-              setInput
-            }
+            onChangeText={(value) => {
+              setInput(value);
+
+              if (!value) {
+                setDraftResponseMode(undefined);
+              }
+            }}
             placeholder="여행에 대해 물어보세요"
             placeholderTextColor="#9CA3AF"
             multiline

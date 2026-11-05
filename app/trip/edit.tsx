@@ -67,10 +67,12 @@ function collectReferencedMemberIds(
   };
 
   for (const expense of expenses) {
+    add(expense.ownerMemberId);
     add(expense.paidByMemberId);
     add(expense.lenderMemberId);
     add(expense.borrowerMemberId);
     expense.participantMemberIds?.forEach(add);
+    expense.participantShares?.forEach((share) => add(share.memberId));
   }
 
   for (const payment of payments) {
