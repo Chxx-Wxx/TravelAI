@@ -49,6 +49,10 @@ import {
   Trip,
 } from "../../types";
 
+import { logStartup } from "../../lib/startup-diagnostics";
+
+logStartup("home.module-evaluated");
+
 export default function HomeScreen() {
   const [
     trip,
@@ -148,9 +152,16 @@ export default function HomeScreen() {
   const loadData =
     useCallback(
       async () => {
+        logStartup("home.data-load-started");
+
         try {
           const tripData =
             await getCurrentTripWithRecovery();
+
+          logStartup("home.current-trip-resolved", {
+            hasTrip: Boolean(tripData),
+          });
+
           const [
             expenseData,
             settingsData,
@@ -158,6 +169,11 @@ export default function HomeScreen() {
             getExpenses(),
             getExpenseSettings(),
           ]);
+
+          logStartup("home.local-finance-resolved", {
+            expenseCount: expenseData.length,
+            hasSettings: Boolean(settingsData),
+          });
 
           setTrip(
             tripData
@@ -194,6 +210,10 @@ export default function HomeScreen() {
               false
             );
 
+            logStartup("home.data-load-completed", {
+              hasTrip: false,
+            });
+
             return;
           }
 
@@ -207,6 +227,10 @@ export default function HomeScreen() {
                 await fetchSchedules(
                   tripData.id
                 );
+
+              logStartup("home.schedules-resolved", {
+                scheduleCount: schedules.length,
+              });
 
               filtered = schedules
                 .filter(
@@ -229,6 +253,7 @@ export default function HomeScreen() {
                     )
                 );
             } catch (error) {
+              logStartup("home.schedules-failed");
               console.error(
                 "오늘 일정 불러오기 실패:",
                 error
@@ -275,6 +300,10 @@ export default function HomeScreen() {
                 scheduleWeather.status ===
                 "available"
               ) {
+                logStartup("home.data-load-completed", {
+                  hasTrip: true,
+                  weatherSource: "schedule",
+                });
                 return;
               }
             }
@@ -290,7 +319,13 @@ export default function HomeScreen() {
                 fallbackWeather
               );
             }
+
+            logStartup("home.data-load-completed", {
+              hasTrip: true,
+              weatherSource: tripData.city ? "city" : "none",
+            });
           } catch (error) {
+            logStartup("home.weather-failed");
             console.error(
               "날씨 불러오기 실패:",
               error
@@ -305,6 +340,7 @@ export default function HomeScreen() {
             );
           }
         } catch (error) {
+          logStartup("home.data-load-failed");
           console.error(
             "홈 데이터 불러오기 실패:",
             error
@@ -336,7 +372,12 @@ export default function HomeScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      loadData();
+      logStartup("home.focused");
+      void loadData();
+
+      return () => {
+        logStartup("home.blurred");
+      };
     }, [loadData])
   );
 

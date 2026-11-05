@@ -43,3 +43,5 @@ app-example
 /android
 # TravelAI backend secrets
 server/.env
+.env
+server/.env

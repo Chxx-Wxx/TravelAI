@@ -27,6 +27,20 @@ const {
   validateScheduleDateWithinTrip,
 } = require("./trip-update-service");
 
+const {
+  AiServiceError,
+  MAX_HISTORY_MESSAGES,
+  MAX_QUESTION_LENGTH,
+  getAiConfig,
+  prepareAiRequest,
+  requestAiResponse,
+} = require("./ai-service");
+
+const {
+  AiLimitError,
+  createAiUsageGuard,
+} = require("./ai-rate-limit");
+
 const app = express();
 
 app.use(cors());
@@ -618,6 +632,7 @@ let trips = [];
 let schedules = [];
 let tripMembers = [];
 let users = [];
+const aiUsageGuard = createAiUsageGuard();
 
 // ======================================================
 // 사용자 API - 로그인 전 기기 로컬 identity
@@ -2136,6 +2151,198 @@ app.delete("/schedules/:id", async (req, res) => {
       message:
         "일정 삭제 중 서버 오류가 발생했습니다.",
     });
+  }
+});
+
+// ======================================================
+// AI API - 읽기 전용 여행 컨텍스트
+// ======================================================
+
+function getAiClientKey(req) {
+  const forwarded = String(
+    req.headers["x-forwarded-for"] ?? ""
+  )
+    .split(",")[0]
+    .trim();
+
+  return (
+    forwarded ||
+    req.socket?.remoteAddress ||
+    "unknown"
+  ).slice(0, 80);
+}
+
+async function loadAiTravelData(tripId) {
+  if (!hasDatabaseUrl) {
+    const trip = trips.find(
+      (item) => item.id === tripId
+    );
+
+    if (!trip) {
+      return null;
+    }
+
+    return {
+      trip,
+      schedules: schedules.filter(
+        (schedule) => schedule.tripId === tripId
+      ),
+    };
+  }
+
+  const [tripResult, scheduleResult] = await Promise.all([
+    query(
+      `
+        SELECT ${TRIP_COLUMNS}
+        FROM trips
+        WHERE id = $1
+      `,
+      [tripId]
+    ),
+    query(
+      `
+        SELECT ${SCHEDULE_COLUMNS}
+        FROM schedules
+        WHERE trip_id = $1
+        ORDER BY date ASC, time ASC, id ASC
+      `,
+      [tripId]
+    ),
+  ]);
+
+  if (tripResult.rowCount === 0) {
+    return null;
+  }
+
+  return {
+    trip: toTrip(tripResult.rows[0]),
+    schedules: scheduleResult.rows.map(toSchedule),
+  };
+}
+
+app.post("/ai/chat", async (req, res) => {
+  const requestId = randomUUID();
+  let usageLease = null;
+  const requestController = new AbortController();
+  const handleConnectionClose = () => {
+    if (!res.writableEnded) {
+      requestController.abort();
+    }
+  };
+  res.once("close", handleConnectionClose);
+
+  try {
+    const tripId = String(req.body?.tripId ?? "").trim();
+    const question = String(req.body?.question ?? "").trim();
+    const history = Array.isArray(req.body?.history)
+      ? req.body.history.slice(-MAX_HISTORY_MESSAGES)
+      : [];
+
+    if (!tripId || tripId.length > 200) {
+      return res.status(400).json({
+        message: "현재 여행 정보가 필요합니다.",
+        code: "AI_TRIP_REQUIRED",
+      });
+    }
+
+    if (
+      !question ||
+      question.length > MAX_QUESTION_LENGTH
+    ) {
+      return res.status(400).json({
+        message:
+          `질문은 1자 이상 ${MAX_QUESTION_LENGTH}자 이내로 입력해주세요.`,
+        code: "AI_INVALID_QUESTION",
+      });
+    }
+
+    const config = getAiConfig();
+
+    if (!config.apiKey) {
+      return res.status(503).json({
+        message:
+          "AI 기능 설정이 필요합니다. 서버의 OPENAI_API_KEY를 확인해주세요.",
+        code: "AI_NOT_CONFIGURED",
+      });
+    }
+
+    const travelData = await loadAiTravelData(tripId);
+
+    if (!travelData) {
+      return res.status(404).json({
+        message: "현재 여행 정보를 서버에서 찾을 수 없습니다.",
+        code: "AI_TRIP_NOT_FOUND",
+      });
+    }
+
+    const aiInput = {
+      ...travelData,
+      question,
+      history,
+      budgetSummary: req.body?.budgetSummary,
+      config,
+      signal: requestController.signal,
+    };
+    const prepared = prepareAiRequest(aiInput);
+
+    usageLease = aiUsageGuard.begin({
+      clientKey: getAiClientKey(req),
+      reservedTokens: prepared.estimatedTokens,
+    });
+
+    const result = await requestAiResponse(aiInput);
+    usageLease.finish(result.usage.totalTokens);
+    usageLease = null;
+
+    return res.json({
+      answer: result.answer,
+      usage: result.usage,
+    });
+  } catch (error) {
+    usageLease?.cancel();
+    usageLease = null;
+
+    if (
+      error instanceof AiServiceError ||
+      error instanceof AiLimitError
+    ) {
+      if (error.statusCode !== 499) {
+        console.warn("AI 요청 실패:", {
+          requestId,
+          code: error.code,
+          statusCode: error.statusCode,
+        });
+      }
+
+      if (res.headersSent || res.writableEnded) {
+        return;
+      }
+
+      return res.status(error.statusCode).json({
+        message: error.message,
+        code: error.code,
+        ...(error.retryAfterSeconds
+          ? { retryAfterSeconds: error.retryAfterSeconds }
+          : {}),
+      });
+    }
+
+    console.error("AI 서버 오류:", {
+      requestId,
+      code: error?.code ?? "AI_INTERNAL_ERROR",
+    });
+
+    if (res.headersSent || res.writableEnded) {
+      return;
+    }
+
+    return res.status(500).json({
+      message: "AI 요청 중 서버 오류가 발생했습니다.",
+      code: "AI_INTERNAL_ERROR",
+    });
+  } finally {
+    usageLease?.cancel();
+    res.off("close", handleConnectionClose);
   }
 });
 

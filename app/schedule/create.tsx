@@ -19,6 +19,7 @@ import {
   ScrollView,
   Text,
   TextInput,
+  type TextInputInstance,
   View,
 } from "react-native";
 
@@ -76,7 +77,7 @@ const durations = [
 
 export default function CreateScheduleScreen() {
   const safeAreaInsets = useSafeAreaInsets();
-  const locationInputRef = useRef<TextInput | null>(null);
+  const locationInputRef = useRef<TextInputInstance | null>(null);
   const saveConfirmationRef = useRef(false);
 
   const [title, setTitle] =

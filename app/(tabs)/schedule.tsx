@@ -14,6 +14,7 @@ import {
   Alert,
   Pressable,
   ScrollView,
+  type ScrollViewInstance,
   Text,
   View,
 } from "react-native";
@@ -169,7 +170,7 @@ export default function ScheduleScreen() {
     useState(0);
 
   const scrollViewRef =
-    useRef<ScrollView | null>(null);
+    useRef<ScrollViewInstance | null>(null);
   const daySectionOffsetsRef =
     useRef<Record<string, number>>({});
   const pendingInitialScrollDateRef =

@@ -64,6 +64,8 @@ import {
   recommendRouteMode,
 } from "../../lib/route-recommendation";
 
+import { logStartup } from "../../lib/startup-diagnostics";
+
 import {
   ComputedRoute,
   computeRoute,
@@ -87,6 +89,8 @@ import {
   Schedule,
   Trip,
 } from "../../types";
+
+logStartup("map.module-evaluated");
 
 type RouteSegmentStatus =
   | "loading"
@@ -613,6 +617,14 @@ export default function MapScreen() {
   }, [updateLocationCameraMode]);
 
   useEffect(() => {
+    logStartup("map.mounted");
+
+    return () => {
+      logStartup("map.unmounted");
+    };
+  }, []);
+
+  useEffect(() => {
     const subscription = AppState.addEventListener(
       "change",
       (nextState) => {
@@ -735,9 +747,15 @@ export default function MapScreen() {
   const loadData =
     useCallback(
       async () => {
+        logStartup("map.data-load-started");
+
         try {
           const tripData =
             await getTrip();
+
+          logStartup("map.current-trip-resolved", {
+            hasTrip: Boolean(tripData),
+          });
 
           setTrip(
             tripData
@@ -765,6 +783,10 @@ export default function MapScreen() {
             setSelectedDate(
               null
             );
+
+            logStartup("map.data-load-completed", {
+              hasTrip: false,
+            });
 
             return;
           }
@@ -835,6 +857,10 @@ export default function MapScreen() {
               tripData.id
             );
 
+          logStartup("map.schedules-resolved", {
+            scheduleCount: scheduleData.length,
+          });
+
           const sorted = [
             ...scheduleData,
           ].sort(
@@ -850,7 +876,13 @@ export default function MapScreen() {
           setSchedules(
             sorted
           );
+
+          logStartup("map.data-load-completed", {
+            hasTrip: true,
+            scheduleCount: sorted.length,
+          });
         } catch (error) {
+          logStartup("map.data-load-failed");
           console.error(
             "지도 데이터 불러오기 실패:",
             error
@@ -869,7 +901,12 @@ export default function MapScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      loadData();
+      logStartup("map.focused");
+      void loadData();
+
+      return () => {
+        logStartup("map.blurred");
+      };
     }, [loadData])
   );
 
@@ -2199,8 +2236,11 @@ export default function MapScreen() {
       mapRef.current = instance;
 
       if (!instance) {
+        logStartup("map.native-ref-detached");
         return;
       }
+
+      logStartup("map.native-ref-attached");
 
       activeMapInstanceKeyRef.current = mapInstanceKey;
       mapReadyRef.current = false;
@@ -2224,8 +2264,13 @@ export default function MapScreen() {
         date !== renderedMapDateRef.current ||
         instanceKey !== activeMapInstanceKeyRef.current
       ) {
+        logStartup("map.ready-callback-stale");
         return;
       }
+
+      logStartup("map.ready-callback-accepted", {
+        scheduleCount: schedulesToFocus.length,
+      });
 
       mapReadyRef.current = true;
       setReadyMapInstanceKey(instanceKey);

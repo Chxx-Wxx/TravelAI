@@ -6,10 +6,12 @@ import {
 } from "react";
 
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
+  type ScrollViewInstance,
   Text,
   TextInput,
   View,
@@ -20,8 +22,23 @@ import {
 } from "expo-router";
 
 import {
+  getExpenseSettings,
+  getExpenses,
   getTrip,
 } from "../../lib/storage";
+
+import {
+  AiBudgetSummary,
+  buildAiBudgetSummary,
+} from "../../lib/ai-context";
+
+import {
+  AI_MAX_HISTORY_MESSAGES,
+  AI_MAX_QUESTION_LENGTH,
+  AiChatError,
+  AiUsage,
+  sendAiChat,
+} from "../../services/ai";
 
 import {
   fetchSchedules,
@@ -32,6 +49,10 @@ import {
   Trip,
 } from "../../types";
 
+import { logStartup } from "../../lib/startup-diagnostics";
+
+logStartup("ai.module-evaluated");
+
 type ChatMessage = {
   id: string;
 
@@ -40,17 +61,35 @@ type ChatMessage = {
     | "assistant";
 
   text: string;
+
+  isError?: boolean;
+  usage?: AiUsage;
+};
+
+type FailedRequest = {
+  question: string;
+};
+
+const EMPTY_BUDGET_SUMMARY: AiBudgetSummary = {
+  budgetKrw: null,
+  totalSpentKrw: 0,
+  remainingBudgetKrw: null,
 };
 
 const quickQuestions = [
-  "오늘 동선 어때?",
-  "근처 맛집 추천해줘",
-  "비 오면 일정 바꿔줘",
-  "예산에 맞게 추천해줘",
+  "내 여행 일정 정리해 줘",
+  "첫째 날 일정이 너무 빡빡하지 않아?",
+  "예산은 얼마나 남았어?",
+  "일정 순서를 개선할 방법이 있어?",
 ];
 
 export default function AIScreen() {
   const nextMessageIdRef = useRef(0);
+  const requestVersionRef = useRef(0);
+  const activeRequestRef = useRef<AbortController | null>(null);
+  const sendingLockRef = useRef(false);
+  const screenActiveRef = useRef(false);
+  const scrollRef = useRef<ScrollViewInstance | null>(null);
 
   const [
     trip,
@@ -75,6 +114,21 @@ export default function AIScreen() {
     useState("");
 
   const [
+    budgetSummary,
+    setBudgetSummary,
+  ] = useState<AiBudgetSummary>(EMPTY_BUDGET_SUMMARY);
+
+  const [
+    isSending,
+    setIsSending,
+  ] = useState(false);
+
+  const [
+    failedRequest,
+    setFailedRequest,
+  ] = useState<FailedRequest | null>(null);
+
+  const [
     messages,
     setMessages,
   ] =
@@ -92,49 +146,81 @@ export default function AIScreen() {
       ]
     );
 
-  const loadData =
-    useCallback(
-      async () => {
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      screenActiveRef.current = true;
+      logStartup("ai.focused");
+
+      async function loadData() {
+        logStartup("ai.data-load-started");
+
         try {
-          const tripData =
-            await getTrip();
+          const tripData = await getTrip();
 
-          setTrip(
-            tripData
-          );
-
-          if (
-            !tripData?.id
-          ) {
-            setSchedules(
-              []
-            );
-
+          if (cancelled) {
             return;
           }
 
-          const scheduleData =
-            await fetchSchedules(
-              tripData.id
-            );
+          setTrip(tripData);
 
-          setSchedules(
-            scheduleData
+          logStartup("ai.current-trip-resolved", {
+            hasTrip: Boolean(tripData),
+          });
+
+          if (!tripData?.id) {
+            setSchedules([]);
+            setBudgetSummary(EMPTY_BUDGET_SUMMARY);
+            logStartup("ai.data-load-completed", {
+              hasTrip: false,
+            });
+            return;
+          }
+
+          const [scheduleData, expenses, settings] =
+            await Promise.all([
+              fetchSchedules(tripData.id),
+              getExpenses(tripData.id),
+              getExpenseSettings(tripData.id),
+            ]);
+
+          if (cancelled) {
+            return;
+          }
+
+          setSchedules(scheduleData);
+          setBudgetSummary(
+            buildAiBudgetSummary(expenses, settings)
           );
+          logStartup("ai.data-load-completed", {
+            hasTrip: true,
+            scheduleCount: scheduleData.length,
+            expenseCount: expenses.length,
+          });
         } catch (error) {
-          console.error(
-            "AI 화면 데이터 불러오기 실패:",
-            error
-          );
+          if (!cancelled) {
+            logStartup("ai.data-load-failed");
+            console.error(
+              "AI 화면 데이터 불러오기 실패:",
+              error
+            );
+          }
         }
-      },
-      []
-    );
+      }
 
-  useFocusEffect(
-    useCallback(() => {
       loadData();
-    }, [loadData])
+
+      return () => {
+        cancelled = true;
+        logStartup("ai.blurred");
+        screenActiveRef.current = false;
+        requestVersionRef.current += 1;
+        activeRequestRef.current?.abort();
+        activeRequestRef.current = null;
+        sendingLockRef.current = false;
+        setIsSending(false);
+      };
+    }, [])
   );
 
   const sortedSchedules =
@@ -158,96 +244,160 @@ export default function AIScreen() {
       3
     );
 
-  function makeTemporaryResponse(
-    question: string
-  ) {
-    if (
-      question.includes(
-        "동선"
-      )
-    ) {
-      return "현재 저장된 일정과 장소 좌표를 기준으로 동선을 분석하는 기능을 연결할 예정입니다.";
-    }
+  const submitQuestion = useCallback(
+    async (
+      question: string,
+      options?: { appendUser?: boolean }
+    ) => {
+      const message = question.trim();
 
-    if (
-      question.includes(
-        "맛집"
-      )
-    ) {
-      return "현재 일정 장소 주변의 식당을 Google Places에서 찾아 추천하도록 연결할 예정입니다.";
-    }
+      if (!message || sendingLockRef.current) {
+        return;
+      }
 
-    if (
-      question.includes(
-        "비"
-      )
-    ) {
-      return "날씨 API를 연결하면 비가 오는 시간대를 확인해서 실내 일정 위주로 대체안을 추천할 수 있습니다.";
-    }
+      if (!trip?.id) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: `assistant-${++nextMessageIdRef.current}`,
+            role: "assistant",
+            text: "먼저 홈에서 여행을 생성해주세요.",
+            isError: true,
+          },
+        ]);
+        return;
+      }
 
-    if (
-      question.includes(
-        "예산"
-      )
-    ) {
-      return "현재 예산과 지출 내역을 함께 분석해서 남은 예산에 맞는 장소와 식당을 추천하도록 만들 예정입니다.";
-    }
+      if (message.length > AI_MAX_QUESTION_LENGTH) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: `assistant-${++nextMessageIdRef.current}`,
+            role: "assistant",
+            text: `질문은 ${AI_MAX_QUESTION_LENGTH}자 이내로 입력해주세요.`,
+            isError: true,
+          },
+        ]);
+        return;
+      }
 
-    return "아직 실제 AI API는 연결 전입니다. 나중에 현재 여행, 일정, 장소, 예산, 날씨 정보를 함께 전달해서 답변하도록 만들 예정입니다.";
+      const appendUser = options?.appendUser !== false;
+      const historyCandidates = messages
+        .filter(
+          (item) =>
+            item.id !== "welcome" &&
+            !item.isError
+        )
+        .map((item) => ({
+          role: item.role,
+          text: item.text,
+        }));
+      const lastHistoryMessage =
+        historyCandidates[historyCandidates.length - 1];
+      const history = (
+        !appendUser &&
+        lastHistoryMessage?.role === "user" &&
+        lastHistoryMessage.text === message
+          ? historyCandidates.slice(0, -1)
+          : historyCandidates
+      ).slice(-AI_MAX_HISTORY_MESSAGES);
+      const messageId = ++nextMessageIdRef.current;
+      const requestVersion = ++requestVersionRef.current;
+      const controller = new AbortController();
+
+      sendingLockRef.current = true;
+      activeRequestRef.current = controller;
+      setIsSending(true);
+      setFailedRequest(null);
+      setInput("");
+
+      if (appendUser) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: `user-${messageId}`,
+            role: "user",
+            text: message,
+          },
+        ]);
+      }
+
+      try {
+        const result = await sendAiChat(
+          {
+            tripId: trip.id,
+            question: message,
+            history,
+            budgetSummary,
+          },
+          controller.signal
+        );
+
+        if (
+          !screenActiveRef.current ||
+          requestVersionRef.current !== requestVersion
+        ) {
+          return;
+        }
+
+        setMessages((current) => [
+          ...current,
+          {
+            id: `assistant-${messageId}`,
+            role: "assistant",
+            text: result.answer,
+            usage: result.usage,
+          },
+        ]);
+      } catch (error) {
+        if (
+          !screenActiveRef.current ||
+          requestVersionRef.current !== requestVersion
+        ) {
+          return;
+        }
+
+        const wasCancelled =
+          error instanceof Error &&
+          error.name === "AbortError";
+        const errorMessage = wasCancelled
+          ? "AI 요청을 취소했습니다."
+          : error instanceof AiChatError
+            ? error.retryAfterSeconds
+              ? `${error.message} ${error.retryAfterSeconds}초 후 다시 시도해주세요.`
+              : error.message
+            : "AI 답변을 받지 못했습니다. 잠시 후 다시 시도해주세요.";
+
+        setFailedRequest({ question: message });
+        setMessages((current) => [
+          ...current,
+          {
+            id: `assistant-error-${messageId}`,
+            role: "assistant",
+            text: errorMessage,
+            isError: true,
+          },
+        ]);
+      } finally {
+        if (
+          screenActiveRef.current &&
+          requestVersionRef.current === requestVersion
+        ) {
+          sendingLockRef.current = false;
+          activeRequestRef.current = null;
+          setIsSending(false);
+        }
+      }
+    },
+    [budgetSummary, messages, trip]
+  );
+
+  function handleSend(text?: string) {
+    void submitQuestion(text ?? input);
   }
 
-  function handleSend(
-    text?: string
-  ) {
-    const message =
-      (
-        text ??
-        input
-      ).trim();
-
-    if (!message) {
-      return;
-    }
-
-    const messageId = ++nextMessageIdRef.current;
-
-    const userMessage:
-      ChatMessage = {
-        id:
-          `user-${messageId}`,
-
-        role:
-          "user",
-
-        text:
-          message,
-      };
-
-    const assistantMessage:
-      ChatMessage = {
-        id:
-          `assistant-${messageId}`,
-
-        role:
-          "assistant",
-
-        text:
-          makeTemporaryResponse(
-            message
-          ),
-      };
-
-    setMessages(
-      (
-        current
-      ) => [
-        ...current,
-        userMessage,
-        assistantMessage,
-      ]
-    );
-
-    setInput("");
+  function handleCancel() {
+    activeRequestRef.current?.abort();
   }
 
   return (
@@ -265,6 +415,7 @@ export default function AIScreen() {
       }
     >
       <ScrollView
+        ref={scrollRef}
         style={{
           flex: 1,
         }}
@@ -274,6 +425,11 @@ export default function AIScreen() {
           paddingBottom: 170,
         }}
         keyboardShouldPersistTaps="handled"
+        onContentSizeChange={() =>
+          scrollRef.current?.scrollToEnd({
+            animated: true,
+          })
+        }
       >
         <Text
           style={{
@@ -535,6 +691,7 @@ export default function AIScreen() {
                 key={
                   question
                 }
+                disabled={isSending}
                 onPress={() =>
                   handleSend(
                     question
@@ -542,7 +699,9 @@ export default function AIScreen() {
                 }
                 style={{
                   backgroundColor:
-                    "#EFF6FF",
+                    isSending
+                      ? "#F3F4F6"
+                      : "#EFF6FF",
 
                   borderRadius: 18,
 
@@ -554,7 +713,9 @@ export default function AIScreen() {
                 <Text
                   style={{
                     color:
-                      "#2563EB",
+                      isSending
+                        ? "#9CA3AF"
+                        : "#2563EB",
                     fontSize: 13,
                     fontWeight:
                       "bold",
@@ -617,7 +778,19 @@ export default function AIScreen() {
                       backgroundColor:
                         isUser
                           ? "#3B82F6"
-                          : "white",
+                          : message.isError
+                            ? "#FEF2F2"
+                            : "white",
+
+                      borderWidth:
+                        message.isError
+                          ? 1
+                          : 0,
+
+                      borderColor:
+                        message.isError
+                          ? "#FECACA"
+                          : "transparent",
 
                       borderRadius: 16,
 
@@ -631,7 +804,9 @@ export default function AIScreen() {
                         color:
                           isUser
                             ? "white"
-                            : "#374151",
+                            : message.isError
+                              ? "#991B1B"
+                              : "#374151",
 
                         lineHeight: 20,
                       }}
@@ -640,11 +815,98 @@ export default function AIScreen() {
                         message.text
                       }
                     </Text>
+
+                    {message.usage ? (
+                      <Text
+                        style={{
+                          marginTop: 7,
+                          color: "#9CA3AF",
+                          fontSize: 11,
+                        }}
+                      >
+                        {message.usage.model} · 입력 {message.usage.inputTokens.toLocaleString()} · 출력 {message.usage.outputTokens.toLocaleString()} 토큰
+                      </Text>
+                    ) : null}
                   </View>
                 </View>
               );
             }
           )}
+
+          {isSending ? (
+            <View
+              style={{
+                alignItems: "flex-start",
+                marginBottom: 10,
+              }}
+            >
+              <View
+                style={{
+                  maxWidth: "85%",
+                  backgroundColor: "white",
+                  borderRadius: 16,
+                  paddingHorizontal: 14,
+                  paddingVertical: 11,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 10,
+                }}
+              >
+                <ActivityIndicator
+                  size="small"
+                  color="#2563EB"
+                />
+                <Text style={{ color: "#4B5563" }}>
+                  여행 정보를 확인하고 있어요.
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={handleCancel}
+                  hitSlop={8}
+                >
+                  <Text
+                    style={{
+                      color: "#DC2626",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    취소
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
+
+          {!isSending && failedRequest ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() =>
+                void submitQuestion(
+                  failedRequest.question,
+                  { appendUser: false }
+                )
+              }
+              style={{
+                alignSelf: "flex-start",
+                borderWidth: 1,
+                borderColor: "#BFDBFE",
+                backgroundColor: "#EFF6FF",
+                borderRadius: 14,
+                paddingHorizontal: 13,
+                paddingVertical: 9,
+                marginBottom: 10,
+              }}
+            >
+              <Text
+                style={{
+                  color: "#1D4ED8",
+                  fontWeight: "bold",
+                }}
+              >
+                다시 시도
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       </ScrollView>
 
@@ -691,6 +953,8 @@ export default function AIScreen() {
             placeholder="여행에 대해 물어보세요"
             placeholderTextColor="#9CA3AF"
             multiline
+            editable={!isSending}
+            maxLength={AI_MAX_QUESTION_LENGTH}
             style={{
               flex: 1,
 
@@ -713,6 +977,10 @@ export default function AIScreen() {
           />
 
           <Pressable
+            disabled={
+              isSending ||
+              !input.trim()
+            }
             onPress={() =>
               handleSend()
             }
@@ -721,7 +989,10 @@ export default function AIScreen() {
                 "flex-end",
 
               backgroundColor:
-                "#3B82F6",
+                isSending ||
+                !input.trim()
+                  ? "#93C5FD"
+                  : "#3B82F6",
 
               borderRadius: 18,
 
@@ -738,7 +1009,9 @@ export default function AIScreen() {
                   "bold",
               }}
             >
-              전송
+              {isSending
+                ? "전송 중"
+                : "전송"}
             </Text>
           </Pressable>
         </View>

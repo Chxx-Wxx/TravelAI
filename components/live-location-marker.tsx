@@ -23,6 +23,9 @@ import {
 import {
   LiveUserLocation,
 } from "../hooks/use-live-location";
+import { logStartup } from "../lib/startup-diagnostics";
+
+logStartup("location-marker.module-evaluated");
 
 type LiveLocationMarkerProps = {
   location: LiveUserLocation;
@@ -66,6 +69,14 @@ function LiveLocationMarkerComponent({
       }),
     [headingAnimation]
   );
+
+  useEffect(() => {
+    logStartup("location-marker.mounted");
+
+    return () => {
+      logStartup("location-marker.unmounted");
+    };
+  }, []);
 
   useEffect(() => {
     const previousLocation = previousLocationRef.current;

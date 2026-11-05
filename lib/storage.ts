@@ -5,6 +5,9 @@ import type {
   SettlementPayment,
   Trip,
 } from "../types";
+import { logStartup } from "./startup-diagnostics";
+
+logStartup("storage.module-evaluated");
 
 const TRIP_KEY = "@travelai_trip";
 const SCHEDULE_KEY = "@travelai_schedule";
@@ -335,8 +338,13 @@ export async function saveTrip(trip: any) {
 }
 
 export async function getTrip() {
+  logStartup("storage.current-trip-read-started");
   const data =
     await AsyncStorage.getItem(TRIP_KEY);
+
+  logStartup("storage.current-trip-read-completed", {
+    hasStoredTrip: Boolean(data),
+  });
 
   return data
     ? JSON.parse(data)

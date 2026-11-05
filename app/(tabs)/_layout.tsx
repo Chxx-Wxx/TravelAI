@@ -1,7 +1,20 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
+import { useEffect } from "react";
+
+import { logStartup } from "../../lib/startup-diagnostics";
+
+logStartup("tabs.module-evaluated");
 
 export default function TabLayout() {
+  useEffect(() => {
+    logStartup("tabs.mounted");
+
+    return () => {
+      logStartup("tabs.unmounted");
+    };
+  }, []);
+
   return (
     <Tabs
       screenOptions={{
@@ -20,7 +33,11 @@ export default function TabLayout() {
         options={{
           title: "일정",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="calendar" size={size} color={color} />
+            <Ionicons
+              name="calendar"
+              size={size}
+              color={typeof color === "number" ? undefined : color ?? undefined}
+            />
           ),
         }}
       />
@@ -30,7 +47,11 @@ export default function TabLayout() {
         options={{
           title: "지도",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="map" size={size} color={color} />
+            <Ionicons
+              name="map"
+              size={size}
+              color={typeof color === "number" ? undefined : color ?? undefined}
+            />
           ),
         }}
       />
@@ -40,7 +61,11 @@ export default function TabLayout() {
         options={{
           title: "홈",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home" size={size} color={color} />
+            <Ionicons
+              name="home"
+              size={size}
+              color={typeof color === "number" ? undefined : color ?? undefined}
+            />
           ),
         }}
       />
@@ -50,7 +75,11 @@ export default function TabLayout() {
         options={{
           title: "지출",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="wallet" size={size} color={color} />
+            <Ionicons
+              name="wallet"
+              size={size}
+              color={typeof color === "number" ? undefined : color ?? undefined}
+            />
           ),
         }}
       />
@@ -60,7 +89,11 @@ export default function TabLayout() {
         options={{
           title: "AI",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="sparkles" size={size} color={color} />
+            <Ionicons
+              name="sparkles"
+              size={size}
+              color={typeof color === "number" ? undefined : color ?? undefined}
+            />
           ),
         }}
       />

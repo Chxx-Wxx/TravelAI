@@ -17,6 +17,9 @@ import {
   normalizeHeading,
   type LocationSample,
 } from "../lib/live-location";
+import { logStartup } from "../lib/startup-diagnostics";
+
+logStartup("location-hook.module-evaluated");
 
 export type LiveLocationStatus =
   | "idle"
@@ -90,6 +93,7 @@ export function useLiveLocation(enabled: boolean) {
       sessionVersionRef.current = sessionVersion;
 
       if (!enabled) {
+        logStartup("location-hook.disabled");
         acceptedLocationRef.current = null;
         sensorHeadingRef.current = null;
         headingTargetRef.current = null;
@@ -243,6 +247,7 @@ export function useLiveLocation(enabled: boolean) {
       };
 
       const start = async () => {
+        logStartup("location-hook.start-requested");
         setStatus("requesting");
         setLocation(null);
         setQualityIssue(null);
@@ -279,6 +284,7 @@ export function useLiveLocation(enabled: boolean) {
           setCanAskAgain(permission.canAskAgain);
 
           if (permission.status !== Location.PermissionStatus.GRANTED) {
+            logStartup("location-hook.permission-denied");
             setLocation(null);
             setStatus("denied");
             return;
@@ -292,6 +298,7 @@ export function useLiveLocation(enabled: boolean) {
           }
 
           if (!servicesEnabled) {
+            logStartup("location-hook.services-disabled");
             setLocation(null);
             setStatus("services-disabled");
             return;
@@ -337,6 +344,7 @@ export function useLiveLocation(enabled: boolean) {
           }
 
           positionSubscription = nextPositionSubscription;
+          logStartup("location-hook.position-subscribed");
 
           try {
             const nextHeadingSubscription =
@@ -358,6 +366,7 @@ export function useLiveLocation(enabled: boolean) {
             }
 
             headingSubscription = nextHeadingSubscription;
+            logStartup("location-hook.heading-subscribed");
           } catch {
             if (!isCurrentSession()) {
               return;
@@ -368,6 +377,7 @@ export function useLiveLocation(enabled: boolean) {
           }
         } catch {
           if (isCurrentSession()) {
+            logStartup("location-hook.start-failed");
             setStatus("error");
           }
         }
@@ -376,6 +386,7 @@ export function useLiveLocation(enabled: boolean) {
       void start();
 
       return () => {
+        logStartup("location-hook.subscriptions-cleaned");
         cancelled = true;
         sessionVersionRef.current += 1;
         positionSubscription?.remove();
