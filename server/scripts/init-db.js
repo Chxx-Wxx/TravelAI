@@ -1,3 +1,5 @@
+/* global __dirname */
+
 const fs = require("fs");
 const path = require("path");
 const dotenv = require("dotenv");
@@ -24,8 +26,35 @@ async function initializeDatabase() {
     "utf8"
   );
 
+  const migrationsPath = path.join(
+    __dirname,
+    "..",
+    "migrations"
+  );
+
+  const migrations = fs.existsSync(migrationsPath)
+    ? fs
+        .readdirSync(migrationsPath)
+        .filter((fileName) => fileName.endsWith(".sql"))
+        .sort()
+        .map((fileName) => ({
+          fileName,
+          sql: fs.readFileSync(
+            path.join(migrationsPath, fileName),
+            "utf8"
+          ),
+        }))
+    : [];
+
   try {
     await pool.query(schema);
+
+    for (const migration of migrations) {
+      await pool.query(migration.sql);
+      console.log(
+        `PostgreSQL 마이그레이션 적용: ${migration.fileName}`
+      );
+    }
 
     console.log(
       "PostgreSQL 스키마 초기화가 완료되었습니다."

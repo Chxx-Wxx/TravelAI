@@ -41,6 +41,10 @@ const {
   createAiUsageGuard,
 } = require("./ai-rate-limit");
 
+const {
+  createExpenseSyncRouter,
+} = require("./expense-sync-router");
+
 const app = express();
 
 app.use(cors());
@@ -633,6 +637,29 @@ let schedules = [];
 let tripMembers = [];
 let users = [];
 const aiUsageGuard = createAiUsageGuard();
+
+const expenseSyncRouter = createExpenseSyncRouter({
+  hasDatabaseUrl,
+  pool,
+  memory: {
+    get trips() {
+      return trips;
+    },
+    get tripMembers() {
+      return tripMembers;
+    },
+    get users() {
+      return users;
+    },
+  },
+});
+
+if (process.env.NODE_ENV === "test") {
+  app.locals.expenseSyncTestState =
+    expenseSyncRouter._expenseSyncTestState;
+}
+
+app.use(expenseSyncRouter);
 
 // ======================================================
 // 사용자 API - 로그인 전 기기 로컬 identity

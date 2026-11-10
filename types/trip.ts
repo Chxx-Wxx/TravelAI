@@ -165,6 +165,10 @@ export interface Expense {
   updatedByMemberId?: string;
   idempotencyKey?: string;
   changeHistory?: ExpenseChangeRecord[];
+
+  // 서버 동기화가 활성화된 계정에서만 서버가 부여한다.
+  version?: number;
+  ledgerRevision?: number;
 }
 
 export interface ExpenseSettings {
@@ -223,6 +227,16 @@ export interface SettlementPayment {
   // 이 최종 정산으로 해소된 개별 expense 관계.
   // 구형 payment에는 없을 수 있다.
   resolvedRelations?: ExpenseSettlementRelation[];
+
+  // 서버 동기화가 활성화된 계정에서만 서버가 부여한다.
+  version?: number;
+  ledgerRevision?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  cancelledAt?: string;
+  createdByMemberId?: string;
+  updatedByMemberId?: string;
+  idempotencyKey?: string;
 }
 export interface PackingItem {
   id: string;

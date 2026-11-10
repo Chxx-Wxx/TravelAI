@@ -221,7 +221,8 @@ legacy snapshot이며, 현재 `PUT /trips/:id`에서 `members`를 바꿔도 `tri
 
 `DATABASE_URL`이 없으면 서버가 동일 API를 프로세스 메모리의 `trips`, `users`,
 `tripMembers`, `schedules` 배열로 제공한다. 서버는 실행되지만 재시작하면 네 배열이 모두
-사라진다. expense/settlement/packing 테이블은 존재하지 않는다.
+사라진다. 지출 동기화용 테이블은 additive migration으로 준비되어 있지만 현재 앱의 원장은 여전히
+AsyncStorage가 기준이다. packing은 서버 테이블이 없다.
 
 ## 6. 현재 서버 API
 
@@ -231,6 +232,8 @@ POST   /places/search
 POST   /routes/compute
 
 POST   /users/ensure
+POST   /auth/device-sessions
+GET    /auth/session
 
 POST   /trips
 GET    /trips
@@ -240,6 +243,16 @@ DELETE /trips/:id
 
 GET    /trips/:id/members
 POST   /trips/:tripId/members/:memberId/claim
+
+GET    /trips/:tripId/expense-ledger
+POST   /trips/:tripId/expense-ledger/transactions
+PUT    /trips/:tripId/expense-ledger/transactions/:expenseId
+POST   /trips/:tripId/expense-ledger/transactions/:expenseId/cancel
+POST   /trips/:tripId/expense-ledger/transactions/:expenseId/restore
+POST   /trips/:tripId/expense-ledger/payments
+POST   /trips/:tripId/expense-ledger/payments/:paymentId/cancel
+POST   /trips/:tripId/expense-ledger/payments/:paymentId/restore
+POST   /trips/:tripId/expense-ledger/import-preview
 
 POST   /schedules
 GET    /schedules?tripId=...
@@ -299,8 +312,11 @@ row lock을 사용한다.
 `app/trip/join-dev.tsx`는 `__DEV__`에서 tripId와 placeholder memberId를 직접 입력하는 검증용
 화면일 뿐 실제 초대 UX가 아니다.
 
-현재 실제 초대 링크/QR/token, 로그인·OAuth, 세션, 서버 권한 검증은 미구현이다. tripId와
-memberId를 아는 클라이언트가 claim을 호출할 수 있다.
+일반 여행/일정 API의 실제 초대 링크·QR·token, 로그인·OAuth와 전면 권한 검증은 아직 미구현이다.
+tripId와 memberId를 아는 클라이언트가 legacy claim을 호출할 수 있으므로 claim 결과만으로 민감한
+지출 권한을 주지 않는다. 지출 동기화 기반은 서버 발급 device bearer session과
+`trip_expense_access_grants`를 함께 검사한다. grant는 향후 검증된 초대 또는 계정 이전만 만들도록
+DB 제약을 두었고 현재 공개 grant API는 없다.
 
 ## 8. current-trip recovery와 여행 삭제
 
@@ -641,8 +657,11 @@ resolvedRelations[]
 `participantShares`의 정확한 부담액을 사용하고, 대여는 여러 번의 일부 상환을 별도 payment로
 기록한다. KRW와 JPY는 환율 없이 상계하지 않고 관계없는 제3자를 경유하지 않는다.
 
-지출·정산은 tripId별 로컬 데이터이며 여러 기기 간 공유, conflict 처리, 서버 DB persistence는
-미구현이다.
+지출·정산의 앱 source of truth는 아직 tripId별 로컬 데이터다. 서버에는 재실행 가능한
+`001_expense_sync.sql` migration, 세션 token hash, 원장 revision, 거래/정산 payload, change log,
+idempotency key와 optimistic version 충돌 검사가 구현되어 있다. 보호된 조회는 관련 멤버 데이터만
+반환하며 legacy claim만으로는 접근할 수 없다. 실제 앱 자동 동기화와 기존 원장 확정 import는
+검증된 계정 연결/초대 및 사용자 확인 UX가 생길 때까지 의도적으로 비활성 상태다.
 
 ## 16. AI 기능 현재 상태
 
@@ -695,8 +714,8 @@ AI 하단 탭의 화면 자체는 구현되어 있다.
 
 ### 미구현
 
-* 실제 초대 링크·QR·token, 로그인·인증·서버 권한 검증과 멀티디바이스 동기화
-* expense/settlement 서버 동기화와 관련 DB persistence
+* 실제 초대 링크·QR·token, 기존 계정의 검증된 이전과 일반 여행/일정 API 전면 권한 검증
+* 보호된 expense/settlement API의 앱 연결, 명시적 로컬 import 확정과 멀티디바이스 갱신 UI
 * 일본 BUS 실제 경로 실데이터 검증과 AUTO 추천 점수 미세조정
 * trip countryCode/timezone 정식 모델과 복수 TRANSIT 후보 자체 최적화
 * Route/일정 순서 최적화 preview/apply, 영업시간 고려, 막차·실시간 지연

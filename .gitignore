@@ -21,6 +21,9 @@ expo-env.d.ts
 # Metro
 .metro-health-check*
 
+# TravelAI local development process state and logs
+.travelai-dev/
+
 # debug
 npm-debug.*
 yarn-debug.*

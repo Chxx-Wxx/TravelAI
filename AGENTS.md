@@ -149,8 +149,11 @@ in-flight Promise 공유를 사용하며 DB에는 저장하지 않는다. WALK T
 cache가 사라진다. Google은 `GOOGLE_MAPS_API_KEY`, NAVITIME은 `NAVITIME_RAPIDAPI_KEY`와
 선택 값인 `NAVITIME_RAPIDAPI_HOST`를 서버에서만 사용한다.
 
-예산, 지출, 정산, 준비물은 서버 API나 DB에 저장하지 않고 현재 tripId별
-AsyncStorage에 저장한다. `expense`, `settlement`, `packing` 테이블이 있다고 가정하지 않는다.
+예산, 지출, 정산, 준비물의 현재 앱 source of truth는 tripId별 AsyncStorage다. 지출 서버 동기화용
+PostgreSQL 테이블과 보호된 API 기반은 추가되어 있지만, 기존 기기 UUID와 placeholder claim은
+인증이 아니므로 앱에서 자동 업로드하거나 서버 원장으로 자동 전환하지 않는다. 지출 API는 서버가
+발급한 bearer 세션과 별도 `trip_expense_access_grants`를 모두 요구한다. 검증된 초대/계정 이전이
+구현되기 전에는 grant를 만드는 공개 API를 추가하지 않는다. 준비물은 계속 로컬 전용이다.
 
 현재 여행 snapshot이 로컬에 있으나 서버 조회가 404이면 홈, 일정, 일정 생성/수정,
 지출 화면에서 서버 여행을 자동 복구할 수 있다. 네트워크 오류나 500에서는 복구하지 않으며,
@@ -559,8 +562,10 @@ IC 운임, 신칸센 포함 경로는 `운임 약 N엔` 형식을 유지한다.
 대여자, 차용자와 송금 방향을 구분한다. `currentMemberId`로 UI의 `나`를 판단한다.
 이름 기반 legacy 데이터는 호환 읽기를 유지하되 임의로 memberId에 귀속시키지 않는다.
 
-예산, 지출, 정산은 tripId별 AsyncStorage에 저장되며 아직 서버 DB에 동기화하지 않는다.
-인증이 없는 현재 단계에서는 요청의 memberId만 신뢰하는 비공개 지출 API를 만들지 않는다.
+예산, 지출, 정산은 현재 앱에서 tripId별 AsyncStorage를 source of truth로 사용한다. 서버에는
+`expense_transactions`, `expense_settlement_payments`, ledger revision/change log와 device session
+기반 보호 API가 준비되어 있다. 그러나 기존 userId/memberId만으로는 접근할 수 없고 별도 서버 grant가
+필요하다. 로컬 원장은 명시적 import preview와 사용자 확인 전에는 업로드하거나 삭제하지 않는다.
 
 memberId 기반 공동 지출은 결제자를 제외한 각 `participant → payer`, 대여는
 `borrower → lender`를 `ExpenseSettlementRelation`으로 계산한다. 실제 송금 완료는 별도
